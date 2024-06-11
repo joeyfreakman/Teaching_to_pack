@@ -12,17 +12,27 @@ import argparse
 from tqdm import tqdm
 import cv2
 import random
-class DatasetCompressor:
-    def __init__(self, input_dataset_path, output_dataset_path):
-        self.input_dataset_path = input_dataset_path
-        self.output_dataset_path = output_dataset_path
 
-    def compress_dataset(self):
-        if not self._check_output_path():
+class DatasetCompressor:
+    def __init__(self, data_directory, output_directory):
+        self.data_directory = data_directory
+        self.output_directory = output_directory
+
+    def compress_datasets(self):
+        os.makedirs(self.output_directory, exist_ok=True)
+        data_files = [f for f in os.listdir(self.data_directory) if f.endswith('.hdf5')]
+
+        for data_file in tqdm(data_files, desc="Compressing datasets"):
+            input_path = os.path.join(self.data_directory, data_file)
+            output_path = os.path.join(self.output_directory, data_file)
+            self.compress_dataset(input_path, output_path)
+
+    def compress_dataset(self, input_dataset_path, output_dataset_path):
+        if not self._check_output_path(output_dataset_path):
             return
 
-        with h5py.File(self.input_dataset_path, "r") as infile:
-            with h5py.File(self.output_dataset_path, "w") as outfile:
+        with h5py.File(input_dataset_path, "r") as infile:
+            with h5py.File(output_dataset_path, "w") as outfile:
                 self._copy_non_image_data(infile, outfile)
                 obs_group = infile["observations"]
                 out_obs_group = outfile.create_group("observations")
@@ -32,11 +42,11 @@ class DatasetCompressor:
                 compressed_lens = self._compress_and_store_images(image_group, out_image_group)
                 outfile.create_dataset("compress_len", data=compressed_lens)
 
-        print(f"Compressed dataset saved to {self.output_dataset_path}")
-
-    def _check_output_path(self):
-        if os.path.exists(self.output_dataset_path):
-            print(f"The file {self.output_dataset_path} already exists. Exiting...")
+        print(f"Compressed dataset saved to {output_dataset_path}")
+    
+    def _check_output_path(self, output_dataset_path):
+        if os.path.exists(output_dataset_path):
+            print(f"The file {output_dataset_path} already exists. Exiting...")
             return False
         return True
 
@@ -86,21 +96,7 @@ class DatasetCompressor:
         for i, img in enumerate(compressed_images):
             compressed_dataset[i, :len(img)] = img
 
-    def test(self,input_dataset_path,output_dataset_path):
-        self.input_dataset_path = input_dataset_path
-        self.output_dataset_path = output_dataset_path
-        self.compress_dataset()
 
-def get_auto_index(dataset_dir, dataset_name_prefix="", data_suffix="hdf5"):
-    max_idx = 5000
-    if not os.path.isdir(dataset_dir):
-        os.makedirs(dataset_dir)
-    for i in range(max_idx + 1):
-        if not os.path.isfile(
-            os.path.join(dataset_dir, f"{dataset_name_prefix}episode_{i}.{data_suffix}")
-        ):
-            return i
-    raise Exception(f"Error getting auto index, or more than {max_idx} episodes")
 
 
 if __name__ == "__main__":
@@ -115,7 +111,12 @@ if __name__ == "__main__":
         help="Directory containing the uncompressed datasets.",
     )
 
-    args = DatasetCompressor(parser.parse_args())
+    args = parser.parse_args()
+    input_directory = args.dataset_dir
+    output_directory = args.dataset_dir + "_compressed"
 
-    output_dataset_dir = args.dataset_dir + "_compressed"
-    os.makedirs(output_dataset_dir, exist_ok=True)
+    compressor = DatasetCompressor(input_directory, output_directory)
+    compressor.compress_datasets()
+
+
+    
