@@ -1,7 +1,7 @@
 import os
 from torch.utils.data import Dataset
 import abc
-from dataset.dataset_config import Data_config
+from dataset_config import Data_config
 from scripts.data_pruning import random_crop
 
 class Highdim_dataset(Dataset, abc.ABC):
@@ -9,14 +9,14 @@ class Highdim_dataset(Dataset, abc.ABC):
                   episode_ids,
         dataset_dir,
         camera_names= Data_config['teachingtopack']['camera_names'],
-        history_len: int = 5,
-        prediction_offset: int = 8,
+        history_len: int = 2,
+        prediction_offset: int = 16,
         history_skip_frame: int = 1,
         random_crop =False,
         device: str = "cpu"
                   ):
         self.episode_ids = episode_ids if len(episode_ids) > 0 else [0]
-        self.data_directory = dataset_dir
+        self.dataset_dir = dataset_dir
         self.camera_names= camera_names
         self.history_len = history_len
         self.prediction_offset = prediction_offset
@@ -24,16 +24,16 @@ class Highdim_dataset(Dataset, abc.ABC):
         self.random_crop = random_crop
         self.device = device
 
-    @abc.abstractmethod
+    
     def get_seq_length(self, idx):
         raise NotImplementedError
     
-    @abc.abstractmethod
+    
     def get_all_actions(self):
         raise NotImplementedError
         
-    @abc.abstractmethod
-    def get_image_observations(self):
+    
+    def get_all_observations(self):
         raise NotImplementedError
 
 
