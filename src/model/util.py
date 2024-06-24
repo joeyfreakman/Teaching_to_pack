@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from torch.utils.data import Sampler
-
+import random
 
 class SinusoidalPosEmb(nn.Module):
     def __init__(self, dim):
@@ -75,3 +75,12 @@ class DAggerSampler(Sampler):
 
     def __len__(self):
         return self.num_batches
+    
+def set_seed(seed):
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.backends.cudnn.enabled:
+        torch.cuda.manual_seed(seed)
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
