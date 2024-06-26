@@ -1,0 +1,3 @@
+[submodule "src/aloha"]
+	path = src/aloha
+	url = git@github.com:tonyzhaozh/aloha.git
