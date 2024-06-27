@@ -1,4 +1,6 @@
-python run.py \
+#!/bin/bash
+export PYTHONPATH="${PYTHONPATH}:/root/Teaching_to_pack/src/aloha/aloha_scripts"
+python /root/Teaching_to_pack/src/core/run.py \
     --task_name teachingtopack \
     --ckpt_dir /root/Teaching_to_pack/environment/dataset/ll_ckpt/task1 \
     --policy_class Diffusion \
