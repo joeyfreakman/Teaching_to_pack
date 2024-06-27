@@ -19,7 +19,7 @@ import hydra
 from src.model.util import set_seed, detach_dict, compute_dict_mean
 from src.model.enc_dataset import load_merged_data
 from src.policy.ddpm import DiffusionPolicy
-from src.model.util import is_multi_gpu_checkpoint, memory_monitor, create_dataset_path, memory_monitor
+from src.model.util import is_multi_gpu_checkpoint, memory_monitor, memory_monitor
 from src.aloha.aloha_scripts.constants import DT, PUPPET_GRIPPER_JOINT_OPEN
 from src.config.dataset_config import TASK_CONFIGS
 from src.aloha.aloha_scripts.real_env import make_real_env  

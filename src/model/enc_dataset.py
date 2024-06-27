@@ -7,7 +7,7 @@ import cv2
 from scripts.data_pruning import crop_resize
 from torchvision import transforms
 from torch.utils.data import DataLoader, ConcatDataset
-from util import DAggerSampler
+from src.model.util import DAggerSampler
 CROP_TOP = True  # hardcode
 FILTER_MISTAKES = True  # Filter out mistakes from the dataset
 
