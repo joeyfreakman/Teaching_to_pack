@@ -1,14 +1,13 @@
 import os
 from torch.utils.data import Dataset
 import abc
-from dataset_config import Data_config
-from scripts.data_pruning import random_crop
+
 
 class Highdim_dataset(Dataset, abc.ABC):
     def __init__(self,
                   episode_ids,
         dataset_dir,
-        camera_names= Data_config['teachingtopack']['camera_names'],
+        camera_names= ['cam_high', 'cam_low', 'cam_left_wrist', 'cam_right_wrist'],
         history_len: int = 2,
         prediction_offset: int = 16,
         history_skip_frame: int = 1,
