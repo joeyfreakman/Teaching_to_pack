@@ -33,9 +33,6 @@ class MultiImageObsEncoder(ModuleAttrMixin):
                  # renormalize rgb input with imagenet normalization
                  # assuming input in [0,1]
                  imagenet_norm: bool = False,
-                 multihead_attention: bool = True,
-                 embed_dim: int = 512,
-                 num_heads: int = 8,
                  ):
         """
         Assumes rgb input: B,C,H,W
@@ -137,8 +134,7 @@ class MultiImageObsEncoder(ModuleAttrMixin):
         self.rgb_keys = rgb_keys
         self.low_dim_keys = low_dim_keys
         self.key_shape_map = key_shape_map
-        if multihead_attention:
-            self.multihead_attention = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads, batch_first=True)
+        
 
     def forward(self, obs_dict):
         batch_size = None
@@ -190,14 +186,9 @@ class MultiImageObsEncoder(ModuleAttrMixin):
             assert data.shape[1:] == self.key_shape_map[key]
             features.append(data)
         
-        if self.multihead_attention:
-            features = torch.stack(features, dim=1)
-            attn_output, _ = self.multihead_attention(features, features, features)
-
-            result = attn_output.view(batch_size, -1)
-        else:
+        
         # concatenate all features
-            result = torch.cat(features, dim=-1)
+        result = torch.cat(features, dim=-1)
         return result
 
     @torch.no_grad()

@@ -1,5 +1,3 @@
-import torch
-import torchvision
 from typing import List
 from robomimic.models.obs_core import VisualCore
 

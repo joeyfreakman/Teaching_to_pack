@@ -1,19 +1,29 @@
 import numpy as np
 import torch
 import os
-import random
 import h5py
 import torch.utils.data
 import cv2
 from scripts.data_pruning import crop_resize
 from torchvision import transforms
-import torch.nn.functional as F
-from resnet_model import get_resnet
-from encoder import MultiImageObsEncoder
 from torch.utils.data import DataLoader, ConcatDataset
 from util import DAggerSampler
 CROP_TOP = True  # hardcode
 FILTER_MISTAKES = True  # Filter out mistakes from the dataset
+
+"""
+    For each timestep:
+    observations
+    - images
+        - cam_high          (480, 640, 3) 'uint8'
+        - cam_low           (480, 640, 3) 'uint8'
+        - cam_left_wrist    (480, 640, 3) 'uint8'
+        - cam_right_wrist   (480, 640, 3) 'uint8'
+    - qpos                  (14,)         'float64'
+    - qvel                  (14,)         'float64'
+    
+    action                  (14,)         'float64'
+    """
 
 class EncoderDataset(torch.utils.data.Dataset):
     def __init__(
@@ -24,7 +34,7 @@ class EncoderDataset(torch.utils.data.Dataset):
         norm_stats,
         max_len=None,
         policy_class=None,
-        encoder=MultiImageObsEncoder
+        
     ):
         super().__init__()
         self.episode_ids = episode_ids if len(episode_ids) > 0 else [0]
@@ -35,7 +45,7 @@ class EncoderDataset(torch.utils.data.Dataset):
         self.max_len = max_len
         self.policy_class = policy_class
         self.transformations = None
-        self.encoder = encoder
+        
 
         self.__getitem__(0)  # initialize self.is_sim
 
@@ -93,7 +103,7 @@ class EncoderDataset(torch.utils.data.Dataset):
             all_cam_images = [image_dict[cam_name] for cam_name in self.camera_names]
             all_cam_images = np.stack(all_cam_images, axis=0)
 
-            image_data = torch.from_numpy(all_cam_images)
+            image_data = torch.from_numpy(all_cam_images)            
             qpos_data = torch.from_numpy(qpos).float()
             action_data = torch.from_numpy(padded_action).float()
             is_pad = torch.from_numpy(is_pad).bool()
@@ -129,30 +139,18 @@ class EncoderDataset(torch.utils.data.Dataset):
                 image_data = transform(image_data)
 
             image_data = image_data / 255.0
-            # Use MultiImageObsEncoder to process image data
-            obs_dict = {cam_name: image_data for cam_name in self.camera_names}
-            encoded_images = self.encoder(obs_dict)
-
+            
             qpos_data = (qpos_data - self.norm_stats["qpos_mean"]) / self.norm_stats[
                 "qpos_std"
             ]
 
-            # Combine encoded images and qpos to form the final observation
-            observation = torch.cat([encoded_images, qpos_data], dim=-1)
+            action_data = (
+                (action_data - self.norm_stats["action_min"])
+                / (self.norm_stats["action_max"] - self.norm_stats["action_min"])
+            ) * 2 - 1
+           
 
-            
-
-            if self.policy_class == "Diffusion":
-                action_data = (
-                    (action_data - self.norm_stats["action_min"])
-                    / (self.norm_stats["action_max"] - self.norm_stats["action_min"])
-                ) * 2 - 1
-            else:
-                action_data = (
-                    action_data - self.norm_stats["action_mean"]
-                ) / self.norm_stats["action_std"]
-
-            return observation, action_data, is_pad
+            return image_data, qpos_data, action_data, is_pad
 
 def get_norm_stats(dataset_dirs, num_episodes_list):
     all_qpos_data = []
