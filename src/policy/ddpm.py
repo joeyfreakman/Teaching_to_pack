@@ -72,7 +72,7 @@ class DiffusionPolicy(nn.Module):
         self.multihead_attn = nn.MultiheadAttention(embed_dim=self.feature_dimension, num_heads=8, batch_first=True)
 
         # Initialize FiLM conditioning layers for each convolution layer in the noise-prediction network
-        self.film_conditioning = nn.ModuleList([
+        self.film_layers = nn.ModuleList([
             FiLMConditioning(self.feature_dimension, self.obs_dim * self.observation_horizon)
             for _ in range(self.num_inference_timesteps)
         ])
