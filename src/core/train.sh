@@ -1,5 +1,5 @@
 #!/bin/bash
-export PYTHONPATH="${PYTHONPATH}:/root/Teaching_to_pack/src/aloha/aloha_scripts"
+export PYTHONPATH="${PYTHONPATH}:/root/Teaching_to_pack/src/aloha/aloha_scripts:/root/interbotix_ws" #add or modify your own python path
 python /root/Teaching_to_pack/src/core/run.py \
     --task_name teachingtopack \
     --ckpt_dir /root/Teaching_to_pack/environment/dataset/ll_ckpt/task1 \

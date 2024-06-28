@@ -21,7 +21,7 @@ from src.model.enc_dataset import load_merged_data
 from src.policy.ddpm import DiffusionPolicy
 from src.model.util import is_multi_gpu_checkpoint, memory_monitor, memory_monitor
 from src.aloha.aloha_scripts.constants import DT, PUPPET_GRIPPER_JOINT_OPEN
-from src.config.dataset_config import TASK_CONFIGS
+from src.config.dataset_config import TASK_CONFIGS, DATA_DIR
 from src.aloha.aloha_scripts.real_env import make_real_env  
 from src.aloha.aloha_scripts.robot_utils import move_grippers
 from src.aloha.aloha_scripts.visualize_episodes import save_videos
@@ -65,14 +65,14 @@ def main(args):
                     saved_run_id = f.read().strip()
                 wandb.init(
                     project="teachingtopack",
-                    entity="$WANDB_ENTITY",
+                    entity="joeywang-of",
                     name=run_name,
                     resume=saved_run_id,
                 )
             else:
                 wandb.init(
                     project="teachingtopack",
-                    entity="$WANDB_ENTITY",
+                    entity="joeywang-of",
                     name=run_name,
                     config=args,
                     resume="allow",
@@ -94,7 +94,7 @@ def main(args):
     for task in task_name:
         
         task_config = TASK_CONFIGS[task]
-        dataset_dirs.append(task_config["dataset_dir"])
+        dataset_dirs.append(DATA_DIR)
         num_episodes_list.append(task_config["num_episodes"])
         max_episode_len = max(max_episode_len, task_config["episode_len"])
         camera_names = task_config["camera_names"]
@@ -153,7 +153,7 @@ def main(args):
             print(f"{ckpt_name}: {success_rate=} {avg_return=}")
         print()
         exit()
-
+    
     train_dataloader, stats, _ = load_merged_data(
         dataset_dirs,
         num_episodes_list,
@@ -642,6 +642,7 @@ if __name__ == "__main__":
     parser.add_argument('--log_wandb', action='store_true')
     parser.add_argument('--gpu', action='store', type=int, help='gpu', default=0, required=False)
     parser.add_argument('--multi_gpu', action='store_true')
+    parser.add_argument('--max_skill_len', action='store', type=int, help='max_skill_len', required=False)
 
     args = parser.parse_args()
     config = vars(args)

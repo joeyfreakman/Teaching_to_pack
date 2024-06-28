@@ -92,6 +92,9 @@ class EncoderDataset(torch.utils.data.Dataset):
             else:
                 action = root["/action"][max(0, start_ts - 1) : end_ts + 1]
                 action_len = end_ts - max(0, start_ts - 1) + 1
+            if action_len > max_len:
+                action = action[:max_len]
+                action_len = max_len
 
             padded_action = np.zeros(
                 (max_len,) + original_action_shape[1:], dtype=np.float32
@@ -199,7 +202,7 @@ def load_merged_data(
     camera_names,
     batch_size_train,
     max_len=None,
-    dagger_ratio=None,
+    dagger_ratio=0.95,
     policy_class=None,
 ):
     assert len(dataset_dirs) == len(
@@ -258,7 +261,7 @@ def load_merged_data(
             merged_train_dataset,
             batch_sampler=dagger_sampler,
             pin_memory=True,
-            num_workers=24,
+            num_workers=4,
             prefetch_factor=4,
             persistent_workers=True,
         )
@@ -269,7 +272,7 @@ def load_merged_data(
             batch_size=batch_size_train,
             shuffle=True,
             pin_memory=True,
-            num_workers=24,
+            num_workers=4,
             prefetch_factor=4,
             persistent_workers=True,
         )
