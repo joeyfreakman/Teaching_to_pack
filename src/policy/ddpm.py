@@ -124,9 +124,9 @@ class DiffusionPolicy(nn.Module):
         )
         return optimizer
 
-    def apply_film_conditioning(self, x, cond, t):
-        for film_layer in self.film_conditioning:
-            x = film_layer(x, cond)
+    def apply_film_conditioning(self, x, cond, num_steps):
+        for i in range(num_steps):
+            x = self.film_layers[i](x, cond)
         return x
 
     def __call__(self, qpos, image, actions=None, is_pad=None):
@@ -136,6 +136,12 @@ class DiffusionPolicy(nn.Module):
             all_features = []
             for cam_id in range(len(self.camera_names)):
                 cam_image = image[:, cam_id]
+                # print(f"cam_image shape before backbone: {cam_image.shape}")
+                # Ensure the cam_image has the shape [batch_size, channels, height, width]
+                if len(cam_image.shape) == 3:
+                    cam_image = cam_image.unsqueeze(0)
+                elif len(cam_image.shape) != 4:
+                    raise ValueError(f"Invalid cam_image shape: {cam_image.shape}")
                 cam_features = nets["policy"]["backbones"][cam_id](cam_image)
                 pool_features = nets["policy"]["pools"][cam_id](cam_features)
                 pool_features = torch.flatten(pool_features, start_dim=1)
