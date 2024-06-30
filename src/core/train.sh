@@ -1,5 +1,5 @@
 #!/bin/bash
-export PYTHONPATH="${PYTHONPATH}:/root/Teaching_to_pack/src/aloha/aloha_scripts:/root/interbotix_ws" #add or modify your own python path
+export PYTHONPATH="${PYTHONPATH}:/root/Teaching_to_pack/src/aloha/aloha_scripts: /root/interbotix_ws: /root/Teaching_to_pack" #add or modify your own python path
 python /root/Teaching_to_pack/src/core/run.py \
     --task_name teachingtopack \
     --ckpt_dir /root/Teaching_to_pack/environment/dataset/ll_ckpt/task1 \
@@ -10,4 +10,6 @@ python /root/Teaching_to_pack/src/core/run.py \
     --num_epochs 30000 \
     --lr 1e-4 \
     --seed 42 \
-    --log_wandb
+    --log_wandb \
+    --gpu 0,1,2,3 \
+    --multi_gpu 
