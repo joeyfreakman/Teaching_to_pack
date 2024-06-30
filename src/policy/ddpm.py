@@ -6,16 +6,7 @@ from robomimic.models.base_nets import ResNet18Conv, SpatialSoftmax
 from robomimic.algo.diffusion_policy import replace_bn_with_gn, ConditionalUnet1D
 from diffusers.schedulers.scheduling_ddim import DDIMScheduler
 
-class FiLMConditioning(nn.Module):
-    def __init__(self, feature_dim, conditioning_dim):
-        super().__init__()
-        self.linear_a = nn.Linear(conditioning_dim, feature_dim)
-        self.linear_b = nn.Linear(conditioning_dim, feature_dim)
 
-    def forward(self, x, cond):
-        a = self.linear_a(cond)
-        b = self.linear_b(cond)
-        return a * x + b
 
 class DiffusionPolicy(nn.Module):
     def __init__(self, args_override):
@@ -71,12 +62,7 @@ class DiffusionPolicy(nn.Module):
         # Initialize Multihead Attention Layer
         self.multihead_attn = nn.MultiheadAttention(embed_dim=self.feature_dimension, num_heads=8, batch_first=True)
 
-        # Initialize FiLM conditioning layers for each convolution layer in the noise-prediction network
-        self.film_layers = nn.ModuleList([
-            FiLMConditioning(self.feature_dimension, self.obs_dim * self.observation_horizon)
-            for _ in range(self.num_inference_timesteps)
-        ])
-
+        # Initialize ConditionalUnet1D
         self.noise_pred_net = ConditionalUnet1D(
             input_dim=self.ac_dim,
             global_cond_dim=self.obs_dim * self.observation_horizon,
@@ -124,24 +110,13 @@ class DiffusionPolicy(nn.Module):
         )
         return optimizer
 
-    def apply_film_conditioning(self, x, cond, num_steps):
-        for i in range(num_steps):
-            x = self.film_layers[i](x, cond)
-        return x
-
     def __call__(self, qpos, image, actions=None, is_pad=None):
-        B = qpos.shape[0]
+        B = qpos.shape[0] 
         if actions is not None:  # training time
             nets = self.nets
             all_features = []
             for cam_id in range(len(self.camera_names)):
                 cam_image = image[:, cam_id]
-                # print(f"cam_image shape before backbone: {cam_image.shape}")
-                # Ensure the cam_image has the shape [batch_size, channels, height, width]
-                if len(cam_image.shape) == 3:
-                    cam_image = cam_image.unsqueeze(0)
-                elif len(cam_image.shape) != 4:
-                    raise ValueError(f"Invalid cam_image shape: {cam_image.shape}")
                 cam_features = nets["policy"]["backbones"][cam_id](cam_image)
                 pool_features = nets["policy"]["pools"][cam_id](cam_features)
                 pool_features = torch.flatten(pool_features, start_dim=1)
@@ -154,14 +129,18 @@ class DiffusionPolicy(nn.Module):
             # Apply multihead attention
             attn_output, _ = self.multihead_attn(all_features, all_features, all_features)
             attn_output = attn_output.mean(dim=1)  # Average over the camera dimension
-
+            # print(f"attn_output shape: {attn_output.shape}")
+            attn_output = attn_output.repeat(1,len(self.camera_names))
             obs_cond = torch.cat([attn_output, qpos], dim=1)
-
-            # Apply FiLM conditioning
-            film_output = self.apply_film_conditioning(actions, obs_cond, self.num_inference_timesteps)
+            obs_cond = obs_cond.reshape(B, -1)
+            obs_cond= obs_cond.repeat(1, self.observation_horizon)
+            
+            #  # Ensure obs_cond shape matches the expected input to noise_pred_net
+            # print(f"Expected obs_cond shape: {self.noise_pred_net.global_cond_dim}")
+            # print(f"Actual obs_cond shape: {obs_cond.shape}")
 
             # sample noise to add to actions
-            noise = torch.randn(film_output.shape, device=obs_cond.device)
+            noise = torch.randn(actions.shape, device=obs_cond.device)
 
             # sample a diffusion iteration for each data point
             timesteps = torch.randint(
@@ -172,7 +151,7 @@ class DiffusionPolicy(nn.Module):
             ).long()
 
             # add noise to the clean actions according to the noise magnitude at each diffusion iteration
-            noisy_actions = self.noise_scheduler.add_noise(film_output, noise, timesteps)
+            noisy_actions = self.noise_scheduler.add_noise(actions, noise, timesteps)
 
             # predict the noise residual
             noise_pred = nets["policy"]["noise_pred_net"](
@@ -209,15 +188,13 @@ class DiffusionPolicy(nn.Module):
             # Apply multihead attention
             attn_output, _ = self.multihead_attn(all_features, all_features, all_features)
             attn_output = attn_output.mean(dim=1)  # Average over the camera dimension
-
+            attn_output = attn_output.repeat(1,len(self.camera_names))
             obs_cond = torch.cat([attn_output, qpos], dim=1)
+            obs_cond = obs_cond.reshape(B, -1)
+            obs_cond= obs_cond.repeat(1, self.observation_horizon)
 
             # initialize action from Gaussian noise
             noisy_action = torch.randn((B, Tp, action_dim), device=obs_cond.device)
-            naction = noisy_action
-
-            # Apply FiLM conditioning
-            film_output = self.apply_film_conditioning(naction, obs_cond, self.num_inference_timesteps)
 
             # init scheduler
             self.noise_scheduler.set_timesteps(self.num_inference_timesteps)
@@ -225,15 +202,15 @@ class DiffusionPolicy(nn.Module):
             for k in self.noise_scheduler.timesteps:
                 # predict noise
                 noise_pred = nets["policy"]["noise_pred_net"](
-                    sample=film_output, timestep=k, global_cond=obs_cond
+                    sample=noisy_action, timestep=k, global_cond=obs_cond
                 )
 
                 # inverse diffusion step (remove noise)
-                film_output = self.noise_scheduler.step(
-                    model_output=noise_pred, timestep=k, sample=film_output
+                noisy_action = self.noise_scheduler.step(
+                    model_output=noise_pred, timestep=k, sample=noisy_action
                 ).prev_sample
 
-            return film_output
+            return noisy_action
 
     def serialize(self):
         return {
