@@ -497,6 +497,10 @@ def forward_pass(data, policy):
         action_data.cuda(),
         is_pad.cuda(),
     )
+    # print(f"image_data shape before policy call: {image_data.shape}")
+    # Ensure qpos_data and image_data have the correct dimensions
+    # qpos_data = qpos_data.view(qpos_data.size(0), -1)  # Flatten qpos_data if necessary
+    # image_data = image_data.view(image_data.size(0), -1)  # Flatten image_data if necessary
     return policy(qpos_data, image_data, action_data, is_pad)
 
 

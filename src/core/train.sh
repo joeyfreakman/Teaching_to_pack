@@ -12,4 +12,4 @@ python /root/Teaching_to_pack/src/core/run.py \
     --lr 1e-4 \
     --seed 42 \
     --log_wandb \
-    --multi_gpu 
+    --gpu 0
