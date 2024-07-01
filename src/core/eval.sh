@@ -1,3 +1,6 @@
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+NUM_GPUS=$(nvidia-smi --list-gpus | wc -l)
+echo "Number of GPUs: $NUM_GPUS"
 python run.py \
     --task_name teachingtopack \
     --eval \
@@ -6,7 +9,8 @@ python run.py \
     --chunk_size 16 \
     --batch_size 16 \
     --max_skill_len 200 \
-    --num_epochs 30000 \
+    --num_epochs 1000 \
     --lr 1e-4 \
     --seed 42 \
-    --log_wandb
+    --log_wandb \
+    --multi_gpu \ 
