@@ -567,7 +567,7 @@ def train_ddpm(train_dataloader, val_dataloader, test_dataloader, config):
         start_epoch = 0
 
     policy.cuda()
-
+    best_val_loss = float('inf')
     train_history = []
     for epoch in tqdm(range(start_epoch, num_epochs)):
         print(f"\nEpoch {epoch}")
@@ -575,13 +575,23 @@ def train_ddpm(train_dataloader, val_dataloader, test_dataloader, config):
         policy.train()
         optimizer.zero_grad()
         for batch_idx, data in enumerate(train_dataloader):
-            forward_dict = forward_pass(data, policy)
-            # backward
-            loss = forward_dict["loss"]
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
-            train_history.append(detach_dict(forward_dict))
+            try:
+                forward_dict = forward_pass(data, policy)
+                # backward
+                loss = forward_dict["loss"]
+                loss.backward()
+                optimizer.step()
+                optimizer.zero_grad()
+                train_history.append(detach_dict(forward_dict))
+            except RuntimeError as e:
+                if 'out of memory' in str(e):
+                    print('| WARNING: ran out of memory, skipping batch')
+                    for p in policy.parameters():
+                        if p.grad is not None:
+                            del p.grad  # free some memory
+                    torch.cuda.empty_cache()
+                else:
+                    raise 
         scheduler.step()
         e = epoch - start_epoch
         epoch_summary = compute_dict_mean(
@@ -603,11 +613,18 @@ def train_ddpm(train_dataloader, val_dataloader, test_dataloader, config):
         val_loss = 0
         with torch.no_grad():
             for batch in tqdm(val_dataloader):
-                image_data, qpos_data, action_data, is_pad = [item.cuda() for item in batch]
-                outputs = policy(image_data, qpos_data)
-                loss = F.mse_loss(outputs, action_data, reduction='none')
-                loss = loss.masked_fill(is_pad.unsqueeze(-1), 0).mean()
-                val_loss += loss.item()
+                try:
+                    # image_data, qpos_data, action_data, is_pad = [item.cuda() for item in batch]
+                    # outputs = policy(qpos_data, image_data)
+                    forward_dict = forward_pass(batch, policy)
+                    loss = forward_dict["loss"]
+                    val_loss += loss.item()
+                except:
+                    if 'out of memory' in str(e):
+                        print('| WARNING: ran out of memory during validation, skipping batch')
+                        torch.cuda.empty_cache()
+                    else:
+                        raise 
 
         avg_val_loss = val_loss / len(val_dataloader)
         print(f"Epoch {epoch+1}/{num_epochs}, Validation Loss: {avg_val_loss:.4f}")
@@ -672,11 +689,18 @@ def train_ddpm(train_dataloader, val_dataloader, test_dataloader, config):
     test_loss = 0
     with torch.no_grad():
         for batch in tqdm(test_dataloader):
-            image_data, qpos_data, action_data, is_pad = [item.cuda() for item in batch]
-            outputs = policy(image_data, qpos_data)
-            loss = F.mse_loss(outputs, action_data, reduction='none')
-            loss = loss.masked_fill(is_pad.unsqueeze(-1), 0).mean()
-            test_loss += loss.item()
+            try:
+                # image_data, qpos_data, action_data, is_pad = [item.cuda() for item in batch]
+                # outputs = policy(image_data, qpos_data)
+                forward_dict = forward_pass(batch, policy)
+                loss = forward_dict["loss"]
+                test_loss += loss.item()
+            except:
+                if 'out of memory' in str(e):
+                        print('| WARNING: ran out of memory during validation, skipping batch')
+                        torch.cuda.empty_cache()
+                else:
+                    raise 
 
     avg_test_loss = test_loss / len(test_dataloader)
     print(f"Test Loss: {avg_test_loss:.4f}")

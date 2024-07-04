@@ -213,42 +213,39 @@ class DiffusionPolicy(nn.Module):
     #         return noisy_action
 
     def __call__(self, qpos, image, actions=None, is_pad=None):
-        B, T, _ = qpos.shape  # B is batch_size，T is timesteps
+        B, T, D = qpos.shape  # B is batch_size, T is timesteps, D is qpos dimension
         if actions is not None:  # training time
             nets = self.nets
             all_features = []
             for t in range(T):
                 t_features = []
                 for cam_id in range(len(self.camera_names)):
-                    cam_image = image[:, t, cam_id]  # time dimension added
+                    cam_image = image[:, t, cam_id]  # Extract cam_image at this time step and camera
                     cam_features = nets["policy"]["backbones"][cam_id](cam_image)
                     pool_features = nets["policy"]["pools"][cam_id](cam_features)
                     pool_features = torch.flatten(pool_features, start_dim=1)
                     out_features = nets["policy"]["linears"][cam_id](pool_features)
                     t_features.append(out_features)
                 
-                # use multi_head attention to each timestep
+                # Use multi-head attention to each timestep
                 t_features = torch.stack(t_features, dim=1)
                 attn_output, _ = self.multihead_attn(t_features, t_features, t_features)
                 attn_output = attn_output.mean(dim=1)
                 all_features.append(attn_output)
             
+            # Concatenate all the timesteps 
             all_features = torch.stack(all_features, dim=1)  # Shape: [B, T, feature_dim]
-            # concatenate the features with position 
+            # Concatenate the features with position 
             obs_cond = torch.cat([all_features, qpos], dim=2)
-            obs_cond = obs_cond.reshape(B, -1)  # flatten all the timesteps
+            obs_cond = obs_cond.reshape(B, -1)  # Flatten all the timesteps
 
-            # match the shape of obs_cond and noise_pred_net.global_cond_dim
+            # Match the shape of obs_cond and noise_pred_net.global_cond_dim
             if obs_cond.shape[1] < self.noise_pred_net.global_cond_dim:
                 repeat_factor = self.noise_pred_net.global_cond_dim // obs_cond.shape[1] + 1
                 obs_cond = obs_cond.repeat(1, repeat_factor)
             obs_cond = obs_cond[:, :self.noise_pred_net.global_cond_dim]
 
-            # # match the shape of obs_cond and noise_pred_net
-            # if obs_cond.shape[1] != self.noise_pred_net.global_cond_dim:
-            #     obs_cond = obs_cond.repeat(1, self.noise_pred_net.global_cond_dim // obs_cond.shape[1])
-
-            # add noise to the actions
+            # Add noise to the actions
             noise = torch.randn(actions.shape, device=obs_cond.device)
             timesteps = torch.randint(
                 0,
@@ -258,11 +255,11 @@ class DiffusionPolicy(nn.Module):
             ).long()
             noisy_actions = self.noise_scheduler.add_noise(actions, noise, timesteps)
 
-            # noise prediction
+            # Noise prediction
             noise_pred = nets["policy"]["noise_pred_net"](
                 noisy_actions, timesteps, global_cond=obs_cond
             )
-
+            
             # L2 loss
             all_l2 = F.mse_loss(noise_pred, noise, reduction="none")
             loss = (all_l2 * ~is_pad.unsqueeze(-1)).mean()
@@ -297,13 +294,16 @@ class DiffusionPolicy(nn.Module):
             obs_cond = torch.cat([all_features, qpos], dim=2)
             obs_cond = obs_cond.reshape(B, -1)
 
-            if obs_cond.shape[1] != self.noise_pred_net.global_cond_dim:
-                obs_cond = obs_cond.repeat(1, self.noise_pred_net.global_cond_dim // obs_cond.shape[1])
+            # Match the shape of obs_cond and noise_pred_net.global_cond_dim
+            if obs_cond.shape[1] < self.noise_pred_net.global_cond_dim:
+                repeat_factor = self.noise_pred_net.global_cond_dim // obs_cond.shape[1] + 1
+                obs_cond = obs_cond.repeat(1, repeat_factor)
+            obs_cond = obs_cond[:, :self.noise_pred_net.global_cond_dim]
 
-            # initiate actions
+            # Initiate actions
             noisy_action = torch.randn((B, Tp, action_dim), device=obs_cond.device)
 
-            # initiate scheduler
+            # Initiate scheduler
             self.noise_scheduler.set_timesteps(self.num_inference_timesteps)
 
             for k in self.noise_scheduler.timesteps:
@@ -314,7 +314,7 @@ class DiffusionPolicy(nn.Module):
                     model_output=noise_pred, timestep=k, sample=noisy_action
                 ).prev_sample
 
-            return noisy_action    
+            return noisy_action
 
     def serialize(self):
         return {

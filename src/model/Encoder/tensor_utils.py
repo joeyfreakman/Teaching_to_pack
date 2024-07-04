@@ -7,6 +7,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 from typing import Dict, Callable, List
+from typing import Optional
+from torch import Tensor
+# from torch import Device
 
 def recursive_dict_list_tuple_apply(x, type_func_dict):
     """
@@ -1043,3 +1046,25 @@ def optimizer_to(optimizer, device):
             if isinstance(v, torch.Tensor):
                 state[k] = v.to(device=device)
     return optimizer
+
+class NestedTensor(object):
+    def __init__(self, tensors, mask: Optional[Tensor]):
+        self.tensors = tensors
+        self.mask = mask
+
+    def to(self, device):  
+        # # noqa
+        cast_tensor = self.tensors.to(device)
+        mask = self.mask
+        if mask is not None:
+            assert mask is not None
+            cast_mask = mask.to(device)
+        else:
+            cast_mask = None
+        return NestedTensor(cast_tensor, cast_mask)
+
+    def decompose(self):
+        return self.tensors, self.mask
+
+    def __repr__(self):
+        return str(self.tensors)
