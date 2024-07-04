@@ -233,16 +233,20 @@ class DiffusionPolicy(nn.Module):
                 attn_output = attn_output.mean(dim=1)
                 all_features.append(attn_output)
             
-            # concatinate all the timesteps 
             all_features = torch.stack(all_features, dim=1)  # Shape: [B, T, feature_dim]
-            
-            # concatinate the features with position 
+            # concatenate the features with position 
             obs_cond = torch.cat([all_features, qpos], dim=2)
-            obs_cond = obs_cond.reshape(B, -1)  # faltten all the timesteps
+            obs_cond = obs_cond.reshape(B, -1)  # flatten all the timesteps
 
-            # match the shape of obs_cond and noise_pred_net
-            if obs_cond.shape[1] != self.noise_pred_net.global_cond_dim:
-                obs_cond = obs_cond.repeat(1, self.noise_pred_net.global_cond_dim // obs_cond.shape[1])
+            # match the shape of obs_cond and noise_pred_net.global_cond_dim
+            if obs_cond.shape[1] < self.noise_pred_net.global_cond_dim:
+                repeat_factor = self.noise_pred_net.global_cond_dim // obs_cond.shape[1] + 1
+                obs_cond = obs_cond.repeat(1, repeat_factor)
+            obs_cond = obs_cond[:, :self.noise_pred_net.global_cond_dim]
+
+            # # match the shape of obs_cond and noise_pred_net
+            # if obs_cond.shape[1] != self.noise_pred_net.global_cond_dim:
+            #     obs_cond = obs_cond.repeat(1, self.noise_pred_net.global_cond_dim // obs_cond.shape[1])
 
             # add noise to the actions
             noise = torch.randn(actions.shape, device=obs_cond.device)
