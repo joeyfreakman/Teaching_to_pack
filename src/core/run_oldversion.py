@@ -17,8 +17,8 @@ import cv2
 import os
 import hydra
 from src.model.util import set_seed, detach_dict, compute_dict_mean
-from src.model.enc_dataset import load_merged_data
-from src.policy.ddpm import DiffusionPolicy
+from src.model.enc_dataset_oldversion import load_merged_data
+from src.policy.ddpm_oldversion import DiffusionPolicy
 from src.model.util import is_multi_gpu_checkpoint, memory_monitor, memory_monitor
 from src.aloha.aloha_scripts.constants import DT, PUPPET_GRIPPER_JOINT_OPEN
 from src.config.dataset_config import TASK_CONFIGS, DATA_DIR
