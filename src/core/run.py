@@ -1,4 +1,3 @@
-from omegaconf import DictConfig
 import argparse
 import math
 import wandb
@@ -15,7 +14,7 @@ from torch.optim.lr_scheduler import LambdaLR
 import signal
 import cv2
 import os
-import hydra
+import torch.nn.functional as F
 from src.model.util import set_seed, detach_dict, compute_dict_mean
 from src.model.enc_dataset import load_merged_data
 from src.policy.ddpm import DiffusionPolicy
@@ -50,6 +49,9 @@ def main(args):
     batch_size_train = args["batch_size"]
     num_epochs = args["num_epochs"]
     log_wandb = args["log_wandb"]
+    history_len = args["history_len"]
+    prediction_offset = args["prediction_offset"]
+    history_skip_frame = args["history_skip_frame"]
 
     # Set up wandb
     if log_wandb:
@@ -64,14 +66,14 @@ def main(args):
                 with open(wandb_run_id_path, "r") as f:
                     saved_run_id = f.read().strip()
                 wandb.init(
-                    project="teachingtopack",
+                    project="task1",
                     entity="joeywang-of",
                     name=run_name,
                     resume=saved_run_id,
                 )
             else:
                 wandb.init(
-                    project="teachingtopack",
+                    project="task1",
                     entity="joeywang-of",
                     name=run_name,
                     config=args,
@@ -111,14 +113,14 @@ def main(args):
         "lr": args["lr"],
         "camera_names": camera_names,
         "action_dim": 14,
-        "observation_horizon": 3,
+        "observation_horizon": 2,
         "action_horizon": 8,  # TODO not used
         "prediction_horizon": args["chunk_size"],
         "num_queries": args["chunk_size"],
         "num_inference_timesteps": 10,
         "multi_gpu": args["multi_gpu"],
         "is_eval": is_eval,
-    }
+        }
 
     config = {
         "num_epochs": num_epochs,
@@ -135,7 +137,7 @@ def main(args):
         "camera_names": camera_names,
         "log_wandb": log_wandb,
         "max_skill_len": max_skill_len,
-    }
+        }
 
     if is_eval:
         print(f"{CKPT=}")
@@ -154,14 +156,18 @@ def main(args):
         print()
         exit()
     
-    train_dataloader, stats, _ = load_merged_data(
+    train_dataloader, stats, _,val_dataloader,test_dataloader = load_merged_data(
         dataset_dirs,
         num_episodes_list,
         camera_names,
         batch_size_train,
         max_len=max_skill_len,
+        history_len=history_len,
+        prediction_offset=prediction_offset,
+        history_skip_frame=history_skip_frame,
         policy_class=policy_class,
     )
+
 
     # save dataset stats
     if not os.path.isdir(ckpt_dir):
@@ -170,7 +176,7 @@ def main(args):
     with open(stats_path, "wb") as f:
         pickle.dump(stats, f)
 
-    train_ddpm(train_dataloader, config)
+    train_ddpm(train_dataloader,val_dataloader,test_dataloader, config)
 
 
 def make_policy(policy_class, policy_config):
@@ -269,19 +275,17 @@ def get_image(ts, camera_names, crop_top=True, save_dir=None, t=None):
     return curr_image
 
 
-def eval_ddpm(config, ckpt_name, save_episode=True, dataset_dirs=None):
+def eval_ddpm(config:dict, ckpt_name, save_episode=True, dataset_dirs=None):
     set_seed(1000)
     ckpt_dir = config["ckpt_dir"]
     state_dim = config["state_dim"]
-    
     policy_class = config["policy_class"]
     onscreen_render = config["onscreen_render"]
     policy_config = config["policy_config"]
     camera_names = config["camera_names"]
     max_timesteps = config["episode_len"]
-    task_name = config["task_name"]
     temporal_agg = config["temporal_agg"]
-    onscreen_cam = "angle"
+    onscreen_cam = "cam_high"
     log_wandb = config["log_wandb"]
 
     # Load policy and stats
@@ -339,7 +343,7 @@ def eval_ddpm(config, ckpt_name, save_episode=True, dataset_dirs=None):
         if onscreen_render:
             ax = plt.subplot()
             plt_img = ax.imshow(
-                env._physics.render(height=480, width=640, camera_id=onscreen_cam)
+                env.physics.render(height=480, width=640, camera_id=onscreen_cam)
             )
             plt.ion()
 
@@ -358,7 +362,7 @@ def eval_ddpm(config, ckpt_name, save_episode=True, dataset_dirs=None):
             for t in range(max_timesteps):
                 ### Update onscreen render and wait for DT
                 if onscreen_render:
-                    image = env._physics.render(
+                    image = env.physics.render(
                         height=480, width=640, camera_id=onscreen_cam
                     )
                     plt_img.set_data(image)
@@ -504,7 +508,7 @@ def forward_pass(data, policy):
     return policy(qpos_data, image_data, action_data, is_pad)
 
 
-def train_ddpm(train_dataloader, config):
+def train_ddpm(train_dataloader, val_dataloader, test_dataloader, config):
     num_epochs = config["num_epochs"]
     ckpt_dir = config["ckpt_dir"]
     seed = config["seed"]
@@ -593,6 +597,28 @@ def train_ddpm(train_dataloader, config):
         if log_wandb:
             epoch_summary_train = {f"train/{k}": v for k, v in epoch_summary.items()}
             wandb.log(epoch_summary_train, step=epoch)
+        
+        # validation
+        policy.eval()
+        val_loss = 0
+        with torch.no_grad():
+            for batch in tqdm(val_dataloader):
+                image_data, qpos_data, action_data, is_pad = [item.cuda() for item in batch]
+                outputs = policy(image_data, qpos_data)
+                loss = F.mse_loss(outputs, action_data, reduction='none')
+                loss = loss.masked_fill(is_pad.unsqueeze(-1), 0).mean()
+                val_loss += loss.item()
+
+        avg_val_loss = val_loss / len(val_dataloader)
+        print(f"Epoch {epoch+1}/{num_epochs}, Validation Loss: {avg_val_loss:.4f}")
+
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            torch.save(policy.state_dict(), 'best_model.pth')
+            print("Model saved!")
+
+        if log_wandb:
+            wandb.log({"val/loss": avg_val_loss}, step=epoch)
 
         save_ckpt_every = 100
         if epoch % save_ckpt_every == 0 and epoch > 0:
@@ -617,6 +643,47 @@ def train_ddpm(train_dataloader, config):
                 if os.path.exists(prune_path):
                     os.remove(prune_path)
 
+        save_ckpt_every = 100
+        if epoch % save_ckpt_every == 0 and epoch > 0:
+            ckpt_path = os.path.join(ckpt_dir, f"policy_epoch_{epoch}_seed_{seed}.ckpt")
+            torch.save(
+                {
+                    "model_state_dict": policy.serialize(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict(),
+                    "epoch": epoch,
+                },
+                ckpt_path,
+            )
+
+            # Pruning: this removes the checkpoint save_ckpt_every epochs behind the current one
+            # except for the ones at multiples of 1000 epochs
+            prune_epoch = epoch - save_ckpt_every
+            if prune_epoch % 1000 != 0:
+                prune_path = os.path.join(
+                    ckpt_dir, f"policy_epoch_{prune_epoch}_seed_{seed}.ckpt"
+                )
+                if os.path.exists(prune_path):
+                    os.remove(prune_path)
+
+    # test
+    policy.load_state_dict(torch.load('best_model.pth'))
+    policy.eval()
+    test_loss = 0
+    with torch.no_grad():
+        for batch in tqdm(test_dataloader):
+            image_data, qpos_data, action_data, is_pad = [item.cuda() for item in batch]
+            outputs = policy(image_data, qpos_data)
+            loss = F.mse_loss(outputs, action_data, reduction='none')
+            loss = loss.masked_fill(is_pad.unsqueeze(-1), 0).mean()
+            test_loss += loss.item()
+
+    avg_test_loss = test_loss / len(test_dataloader)
+    print(f"Test Loss: {avg_test_loss:.4f}")
+
+    if log_wandb:
+        wandb.log({"test/loss": avg_test_loss})
+
     ckpt_path = os.path.join(ckpt_dir, f"policy_last.ckpt")
     torch.save(
         {
@@ -627,7 +694,7 @@ def train_ddpm(train_dataloader, config):
         },
         ckpt_path,
     )
-
+    
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -647,11 +714,10 @@ if __name__ == "__main__":
     parser.add_argument('--gpu', action='store', type=int, help='gpu', default=0, required=False)
     parser.add_argument('--multi_gpu', action='store_true')
     parser.add_argument('--max_skill_len', action='store', type=int, help='max_skill_len', required=False)
+    parser.add_argument('--history_len', type=int, default=3)
+    parser.add_argument('--prediction_offset', type=int, default=10)
+    parser.add_argument('--history_skip_frame', type=int, default=20)
 
     args = parser.parse_args()
     config = vars(args)
-    
-    if args.eval:
-        eval_ddpm(config)
-    else:
-        main(config)
+    main(config)

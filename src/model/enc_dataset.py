@@ -32,8 +32,12 @@ class EncoderDataset(torch.utils.data.Dataset):
         dataset_dir,
         camera_names,
         norm_stats,
+        history_skip_frame: int,
+        history_len: int,
+        prediction_offset: int,
         max_len=None,
         policy_class=None,
+        
         
     ):
         super().__init__()
@@ -45,77 +49,103 @@ class EncoderDataset(torch.utils.data.Dataset):
         self.max_len = max_len
         self.policy_class = policy_class
         self.transformations = None
-        
+        self.history_len = history_len
+        self.prediction_offset = prediction_offset
+        self.history_skip_frame = history_skip_frame
+        self.is_sim = self._check_sim()  # initialize self.is_sim
 
-        self.__getitem__(0)  # initialize self.is_sim
+    def _check_sim(self):
+        for episode_id in self.episode_ids:
+            dataset_path = os.path.join(self.dataset_dir, f"episode_{episode_id}.hdf5")
+            if os.path.exists(dataset_path):
+                with h5py.File(dataset_path, "r") as root:
+                    return root.attrs["sim"]
+        raise ValueError("No valid episodes found in the dataset.")
 
     def __len__(self):
+        # length = len(self.episode_ids)
+        # print(f"Dataset length: {length}")  # debug
+        # return max(length, 1) 
         return len(self.episode_ids)
+    
+
 
     def __getitem__(self, index):
         max_len = self.max_len
+        if not isinstance(index, (int, np.integer)):
+            raise TypeError(f"Index must be an integer, got {type(index)}")
+        index = int(index)
+        if index < 0 or index >= len(self.episode_ids):
+            raise IndexError(f"Index {index} out of range for dataset of size {len(self.episode_ids)}")
 
         episode_id = self.episode_ids[index]
         dataset_path = os.path.join(self.dataset_dir, f"episode_{episode_id}.hdf5")
 
         with h5py.File(dataset_path, "r") as root:
-            is_sim = root.attrs["sim"]
-            self.is_sim = is_sim
             compressed = root.attrs.get("compress", False)
-            original_action_shape = root["/action"].shape
-
-            start_ts = np.random.choice(original_action_shape[0])
-            end_ts = original_action_shape[0] - 1
-
-            qpos = root["/observations/qpos"][start_ts]
-
-            image_dict = dict()
-            for cam_name in self.camera_names:
-                image_dict[cam_name] = root[f"/observations/images/{cam_name}"][start_ts]
-
-            if compressed:
-                for cam_name in image_dict.keys():
-                    decompressed_image = cv2.imdecode(image_dict[cam_name], 1)
-                    image_dict[cam_name] = np.array(decompressed_image)
-
-                    if CROP_TOP and cam_name == "cam_high":
-                        image_dict[cam_name] = crop_resize(image_dict[cam_name])
-
-            for cam_name in image_dict.keys():
-                image_dict[cam_name] = cv2.cvtColor(
-                    image_dict[cam_name], cv2.COLOR_BGR2RGB
+            total_timesteps = root["/action"].shape[0]
+            try:
+                curr_ts = np.random.randint(
+                    self.history_len * self.history_skip_frame,
+                    total_timesteps - self.prediction_offset,
                 )
+                start_ts = curr_ts - self.history_len * self.history_skip_frame
+                target_ts = curr_ts + self.prediction_offset
+            except ValueError:
+                # sample a different episode in range len(self.episode_ids)
+                return self.__getitem__(np.random.randint(0, len(self.episode_ids)))
 
-            if is_sim:
-                action = root["/action"][start_ts : end_ts + 1]
-                action_len = end_ts - start_ts + 1
+            image_sequence = []
+            for t in range(start_ts, curr_ts + 1, self.history_skip_frame):
+                image_dict = dict()
+                for cam_name in self.camera_names:
+                    image_dict[cam_name] = root[f"/observations/images/{cam_name}"][t]
+
+                if compressed:
+                    for cam_name in image_dict.keys():
+                        decompressed_image = cv2.imdecode(image_dict[cam_name], 1)
+                        image_dict[cam_name] = np.array(decompressed_image)
+
+                        if CROP_TOP and cam_name == "cam_high":
+                            image_dict[cam_name] = crop_resize(image_dict[cam_name])
+
+                for cam_name in image_dict.keys():
+                    image_dict[cam_name] = cv2.cvtColor(
+                        image_dict[cam_name], cv2.COLOR_BGR2RGB
+                    )
+                
+                all_cam_images = [image_dict[cam_name] for cam_name in self.camera_names]
+                all_cam_images = np.stack(all_cam_images, axis=0)
+                image_sequence.append(all_cam_images)
+            image_sequence = np.array(image_sequence)
+            image_data = torch.tensor(image_sequence, dtype=torch.float32)
+            image_data = torch.einsum("t k h w c -> t k c h w", image_data)
+
+            qpos_sequence = root["/observations/qpos"][start_ts:curr_ts+1:self.history_skip_frame]
+            qpos_data = torch.from_numpy(qpos_sequence).float()
+
+            if self.is_sim:
+                action_sequence = root["/action"][start_ts:target_ts+1]
             else:
-                action = root["/action"][max(0, start_ts - 1) : end_ts + 1]
-                action_len = end_ts - max(0, start_ts - 1) + 1
+                action_sequence = root["/action"][max(0, start_ts-1):target_ts+1]
+        
+            action_len = len(action_sequence)
+            # print(f"action_len: {action_len}")
             if action_len > max_len:
-                action = action[:max_len]
+                action_sequence = action_sequence[:max_len]
                 action_len = max_len
 
-            padded_action = np.zeros(
-                (max_len,) + original_action_shape[1:], dtype=np.float32
-            )
-            padded_action[:action_len] = action
-            is_pad = np.zeros(max_len)
-            is_pad[action_len:] = 1
-
-            all_cam_images = [image_dict[cam_name] for cam_name in self.camera_names]
-            all_cam_images = np.stack(all_cam_images, axis=0)
-
-            image_data = torch.from_numpy(all_cam_images)            
-            qpos_data = torch.from_numpy(qpos).float()
+            padded_action = np.zeros((max_len,) + action_sequence.shape[1:], dtype=np.float32)
+            padded_action[:action_len] = action_sequence
             action_data = torch.from_numpy(padded_action).float()
-            is_pad = torch.from_numpy(is_pad).bool()
 
-            image_data = torch.einsum("k h w c -> k c h w", image_data)
+            is_pad = torch.zeros(max_len, dtype=torch.bool)
+            is_pad[action_len:] = True
 
             if self.transformations is None:
-                print("Initializing transformations")
-                original_size = image_data.shape[2:]
+               
+                original_size = (image_data.shape[3:])
+                # print(f"original_size: {original_size}")
                 ratio = 0.95
                 self.transformations = [
                     transforms.RandomCrop(
@@ -137,9 +167,12 @@ class EncoderDataset(torch.utils.data.Dataset):
                             ),
                         ]
                     )
-
+            # print(self.transformations)
+            
             for transform in self.transformations:
-                image_data = transform(image_data)
+                # image_data = transform(image_data)
+                image_data = torch.stack([transform(img) for img in image_data])
+                # print(image_data.shape)
 
             image_data = image_data / 255.0
             
@@ -151,8 +184,9 @@ class EncoderDataset(torch.utils.data.Dataset):
                 (action_data - self.norm_stats["action_min"])
                 / (self.norm_stats["action_max"] - self.norm_stats["action_min"])
             ) * 2 - 1
-           
 
+            # print(f"image_data: {image_data.shape}, qpos_data: {qpos_data.shape}, action_data: {action_data.shape}, is_pad: {is_pad.shape}")
+            # print(f"Index {index}")
             return image_data, qpos_data, action_data, is_pad
 
 def get_norm_stats(dataset_dirs, num_episodes_list):
@@ -202,8 +236,11 @@ def load_merged_data(
     camera_names,
     batch_size_train,
     max_len=None,
-    dagger_ratio=0.95,
+    dagger_ratio=None,
     policy_class=None,
+    history_len=2,
+    prediction_offset=5,
+    history_skip_frame=1,
 ):
     assert len(dataset_dirs) == len(
         num_episodes_list
@@ -211,7 +248,7 @@ def load_merged_data(
     if dagger_ratio is not None:
         assert 0 <= dagger_ratio <= 1, "dagger_ratio must be between 0 and 1."
 
-    all_filtered_indices = []
+    all_episode_indices = []
     last_dataset_indices = []
 
     for i, (dataset_dir, num_episodes) in enumerate(
@@ -220,30 +257,86 @@ def load_merged_data(
         print(f"\nData from: {dataset_dir}\n")
 
         # Collect all episodes without filtering by command list
-        filtered_indices = [(dataset_dir, i) for i in range(num_episodes)]
+        episode_indices = [(dataset_dir, i) for i in range(num_episodes)]
 
         if i == len(dataset_dirs) - 1:  # Last dataset
-            last_dataset_indices.extend(filtered_indices)
-        all_filtered_indices.extend(filtered_indices)
+            last_dataset_indices.extend(episode_indices)
+        all_episode_indices.extend(episode_indices)
 
-    print(f"Total number of episodes across datasets: {len(all_filtered_indices)}")
+    # print(f"Total number of episodes across datasets: {len(all_episode_indices)}")
 
     # Obtain normalization stats for qpos and action
     norm_stats = get_norm_stats(dataset_dirs, num_episodes_list)
 
+    train_ratio = 0.8
+    val_ratio = 0.1
+
+    shuffled_indices = np.random.permutation(all_episode_indices)
+    train_split = int(train_ratio * len(all_episode_indices))
+    val_split = int((train_ratio + val_ratio) * len(all_episode_indices))
+
+    train_indices = shuffled_indices[:train_split]
+    val_indices = shuffled_indices[train_split:val_split]
+    test_indices = shuffled_indices[val_split:]
+
+    # print(f"Train indices length: {len(train_indices)}, Validation indices length: {len(val_indices)}, Test indices length: {len(test_indices)}")
+
+
     # Construct dataset and dataloader for each dataset dir and merge them
     train_datasets = [
         EncoderDataset(
-            [idx for d, idx in all_filtered_indices if d == dataset_dir],
+            [idx for d, idx in train_indices if d == dataset_dir],
             dataset_dir,
             camera_names,
             norm_stats,
+            history_skip_frame,
+            history_len,
+            prediction_offset,
             max_len,
             policy_class=policy_class,
         )
         for dataset_dir in dataset_dirs
     ]
+    val_datasets = [
+        EncoderDataset(
+            [idx for d, idx in val_indices if d == dataset_dir], 
+            dataset_dir, 
+            camera_names, 
+            norm_stats,
+            history_skip_frame,
+            history_len,
+            prediction_offset,
+            max_len, 
+            policy_class=policy_class
+        ) 
+        for dataset_dir in dataset_dirs
+    ]
+    
+    test_datasets = [
+        EncoderDataset(
+            [idx for d, idx in test_indices if d == dataset_dir],
+            dataset_dir,
+            camera_names,
+            norm_stats,
+            history_skip_frame,
+            history_len,
+            prediction_offset,
+            max_len,
+            policy_class=policy_class,
+        )
+        for dataset_dir in dataset_dirs
+    ]
+    for dataset in train_datasets + val_datasets + test_datasets:
+        if len(dataset) == 0:
+            print(f"Warning: Empty dataset found in {dataset.dataset_dir}")
+            
+    # print(f"Train datasets length: {[len(ds) for ds in train_datasets]}")
+    # print(f"Validation datasets length: {[len(ds) for ds in val_datasets]}")
+    # print(f"Test datasets length: {[len(ds) for ds in test_datasets]}")
+            
     merged_train_dataset = ConcatDataset(train_datasets)
+    merged_val_dataset = ConcatDataset(val_datasets)
+    merged_test_dataset = ConcatDataset(test_datasets)
 
     if dagger_ratio is not None:
         dataset_sizes = {
@@ -251,7 +344,7 @@ def load_merged_data(
             for dataset_dir, num_episodes in zip(dataset_dirs, num_episodes_list)
         }
         dagger_sampler = DAggerSampler(
-            all_filtered_indices,
+            all_episode_indices,
             last_dataset_indices,
             batch_size_train,
             dagger_ratio,
@@ -262,6 +355,14 @@ def load_merged_data(
             batch_sampler=dagger_sampler,
             pin_memory=True,
             num_workers=4,
+            prefetch_factor=4,
+            persistent_workers=True,
+        )
+        val_dataloader = DataLoader(
+            merged_val_dataset,
+            batch_size=batch_size_train,
+            pin_memory=True,
+            num_workers=2,
             prefetch_factor=4,
             persistent_workers=True,
         )
@@ -276,5 +377,22 @@ def load_merged_data(
             prefetch_factor=4,
             persistent_workers=True,
         )
-
-    return train_dataloader, norm_stats, train_datasets[-1].is_sim
+        val_dataloader = DataLoader(
+            merged_val_dataset,
+            batch_size=batch_size_train,
+            shuffle = True,
+            pin_memory=True,
+            num_workers=4,
+            prefetch_factor=4,
+            persistent_workers=True,
+        )
+    test_dataloader = DataLoader(
+        merged_test_dataset,
+        batch_size=batch_size_train,
+        shuffle=False,
+        pin_memory=True,
+        num_workers=2,
+        prefetch_factor=1,
+        
+    )
+    return train_dataloader, norm_stats, train_datasets[-1].is_sim, val_dataloader, test_dataloader

@@ -110,50 +110,151 @@ class DiffusionPolicy(nn.Module):
         )
         return optimizer
 
+    # def __call__(self, qpos, image, actions=None, is_pad=None):
+    #     B = qpos.shape[0] 
+    #     if actions is not None:  # training time
+    #         nets = self.nets
+    #         all_features = []
+    #         for cam_id in range(len(self.camera_names)):
+    #             cam_image = image[:, cam_id]
+    #             cam_features = nets["policy"]["backbones"][cam_id](cam_image)
+    #             pool_features = nets["policy"]["pools"][cam_id](cam_features)
+    #             pool_features = torch.flatten(pool_features, start_dim=1)
+    #             out_features = nets["policy"]["linears"][cam_id](pool_features)
+    #             all_features.append(out_features)
+
+    #         # Convert list to tensor for multihead attention
+    #         all_features = torch.stack(all_features, dim=1)  # Shape: [B, num_cameras, feature_dim]
+
+    #         # Apply multihead attention
+    #         attn_output, _ = self.multihead_attn(all_features, all_features, all_features)
+    #         attn_output = attn_output.mean(dim=1)  # Average over the camera dimension
+    #         # print(f"attn_output shape: {attn_output.shape}")
+    #         attn_output = attn_output.repeat(1,len(self.camera_names))
+    #         obs_cond = torch.cat([attn_output, qpos], dim=1)
+    #         obs_cond = obs_cond.reshape(B, -1)
+    #         obs_cond= obs_cond.repeat(1, self.observation_horizon)
+            
+    #         #  # Ensure obs_cond shape matches the expected input to noise_pred_net
+    #         # print(f"Expected obs_cond shape: {self.noise_pred_net.global_cond_dim}")
+    #         # print(f"Actual obs_cond shape: {obs_cond.shape}")
+
+    #         # sample noise to add to actions
+    #         noise = torch.randn(actions.shape, device=obs_cond.device)
+
+    #         # sample a diffusion iteration for each data point
+    #         timesteps = torch.randint(
+    #             0,
+    #             self.noise_scheduler.config.num_train_timesteps,
+    #             (B,),
+    #             device=obs_cond.device,
+    #         ).long()
+
+    #         # add noise to the clean actions according to the noise magnitude at each diffusion iteration
+    #         noisy_actions = self.noise_scheduler.add_noise(actions, noise, timesteps)
+
+    #         # predict the noise residual
+    #         noise_pred = nets["policy"]["noise_pred_net"](
+    #             noisy_actions, timesteps, global_cond=obs_cond
+    #         )
+
+    #         # L2 loss
+    #         all_l2 = F.mse_loss(noise_pred, noise, reduction="none")
+    #         loss = (all_l2 * ~is_pad.unsqueeze(-1)).mean()
+
+    #         loss_dict = {}
+    #         loss_dict["l2_loss"] = loss
+    #         loss_dict["loss"] = loss
+    #         return loss_dict
+    #     else:  # inference time
+    #         To = self.observation_horizon
+    #         Ta = self.action_horizon
+    #         Tp = self.prediction_horizon
+    #         action_dim = self.ac_dim
+
+    #         nets = self.nets
+    #         all_features = []
+    #         for cam_id in range(len(self.camera_names)):
+    #             cam_image = image[:, cam_id]
+    #             cam_features = nets["policy"]["backbones"][cam_id](cam_image)
+    #             pool_features = nets["policy"]["pools"][cam_id](cam_features)
+    #             pool_features = torch.flatten(pool_features, start_dim=1)
+    #             out_features = nets["policy"]["linears"][cam_id](pool_features)
+    #             all_features.append(out_features)
+
+    #         # Convert list to tensor for multihead attention
+    #         all_features = torch.stack(all_features, dim=1)  # Shape: [B, num_cameras, feature_dim]
+
+    #         # Apply multihead attention
+    #         attn_output, _ = self.multihead_attn(all_features, all_features, all_features)
+    #         attn_output = attn_output.mean(dim=1)  # Average over the camera dimension
+    #         attn_output = attn_output.repeat(1,len(self.camera_names))
+    #         obs_cond = torch.cat([attn_output, qpos], dim=1)
+    #         obs_cond = obs_cond.reshape(B, -1)
+    #         obs_cond= obs_cond.repeat(1, self.observation_horizon)
+
+    #         # initialize action from Gaussian noise
+    #         noisy_action = torch.randn((B, Tp, action_dim), device=obs_cond.device)
+
+    #         # init scheduler
+    #         self.noise_scheduler.set_timesteps(self.num_inference_timesteps)
+
+    #         for k in self.noise_scheduler.timesteps:
+    #             # predict noise
+    #             noise_pred = nets["policy"]["noise_pred_net"](
+    #                 sample=noisy_action, timestep=k, global_cond=obs_cond
+    #             )
+
+    #             # inverse diffusion step (remove noise)
+    #             noisy_action = self.noise_scheduler.step(
+    #                 model_output=noise_pred, timestep=k, sample=noisy_action
+    #             ).prev_sample
+
+    #         return noisy_action
+
     def __call__(self, qpos, image, actions=None, is_pad=None):
-        B = qpos.shape[0] 
+        B, T, _ = qpos.shape  # B is batch_size，T is timesteps
         if actions is not None:  # training time
             nets = self.nets
             all_features = []
-            for cam_id in range(len(self.camera_names)):
-                cam_image = image[:, cam_id]
-                cam_features = nets["policy"]["backbones"][cam_id](cam_image)
-                pool_features = nets["policy"]["pools"][cam_id](cam_features)
-                pool_features = torch.flatten(pool_features, start_dim=1)
-                out_features = nets["policy"]["linears"][cam_id](pool_features)
-                all_features.append(out_features)
-
-            # Convert list to tensor for multihead attention
-            all_features = torch.stack(all_features, dim=1)  # Shape: [B, num_cameras, feature_dim]
-
-            # Apply multihead attention
-            attn_output, _ = self.multihead_attn(all_features, all_features, all_features)
-            attn_output = attn_output.mean(dim=1)  # Average over the camera dimension
-            # print(f"attn_output shape: {attn_output.shape}")
-            attn_output = attn_output.repeat(1,len(self.camera_names))
-            obs_cond = torch.cat([attn_output, qpos], dim=1)
-            obs_cond = obs_cond.reshape(B, -1)
-            obs_cond= obs_cond.repeat(1, self.observation_horizon)
+            for t in range(T):
+                t_features = []
+                for cam_id in range(len(self.camera_names)):
+                    cam_image = image[:, t, cam_id]  # time dimension added
+                    cam_features = nets["policy"]["backbones"][cam_id](cam_image)
+                    pool_features = nets["policy"]["pools"][cam_id](cam_features)
+                    pool_features = torch.flatten(pool_features, start_dim=1)
+                    out_features = nets["policy"]["linears"][cam_id](pool_features)
+                    t_features.append(out_features)
+                
+                # use multi_head attention to each timestep
+                t_features = torch.stack(t_features, dim=1)
+                attn_output, _ = self.multihead_attn(t_features, t_features, t_features)
+                attn_output = attn_output.mean(dim=1)
+                all_features.append(attn_output)
             
-            #  # Ensure obs_cond shape matches the expected input to noise_pred_net
-            # print(f"Expected obs_cond shape: {self.noise_pred_net.global_cond_dim}")
-            # print(f"Actual obs_cond shape: {obs_cond.shape}")
+            # concatinate all the timesteps 
+            all_features = torch.stack(all_features, dim=1)  # Shape: [B, T, feature_dim]
+            
+            # concatinate the features with position 
+            obs_cond = torch.cat([all_features, qpos], dim=2)
+            obs_cond = obs_cond.reshape(B, -1)  # faltten all the timesteps
 
-            # sample noise to add to actions
+            # match the shape of obs_cond and noise_pred_net
+            if obs_cond.shape[1] != self.noise_pred_net.global_cond_dim:
+                obs_cond = obs_cond.repeat(1, self.noise_pred_net.global_cond_dim // obs_cond.shape[1])
+
+            # add noise to the actions
             noise = torch.randn(actions.shape, device=obs_cond.device)
-
-            # sample a diffusion iteration for each data point
             timesteps = torch.randint(
                 0,
                 self.noise_scheduler.config.num_train_timesteps,
                 (B,),
                 device=obs_cond.device,
             ).long()
-
-            # add noise to the clean actions according to the noise magnitude at each diffusion iteration
             noisy_actions = self.noise_scheduler.add_noise(actions, noise, timesteps)
 
-            # predict the noise residual
+            # noise prediction
             noise_pred = nets["policy"]["noise_pred_net"](
                 noisy_actions, timesteps, global_cond=obs_cond
             )
@@ -162,9 +263,7 @@ class DiffusionPolicy(nn.Module):
             all_l2 = F.mse_loss(noise_pred, noise, reduction="none")
             loss = (all_l2 * ~is_pad.unsqueeze(-1)).mean()
 
-            loss_dict = {}
-            loss_dict["l2_loss"] = loss
-            loss_dict["loss"] = loss
+            loss_dict = {"l2_loss": loss, "loss": loss}
             return loss_dict
         else:  # inference time
             To = self.observation_horizon
@@ -174,43 +273,44 @@ class DiffusionPolicy(nn.Module):
 
             nets = self.nets
             all_features = []
-            for cam_id in range(len(self.camera_names)):
-                cam_image = image[:, cam_id]
-                cam_features = nets["policy"]["backbones"][cam_id](cam_image)
-                pool_features = nets["policy"]["pools"][cam_id](cam_features)
-                pool_features = torch.flatten(pool_features, start_dim=1)
-                out_features = nets["policy"]["linears"][cam_id](pool_features)
-                all_features.append(out_features)
-
-            # Convert list to tensor for multihead attention
-            all_features = torch.stack(all_features, dim=1)  # Shape: [B, num_cameras, feature_dim]
-
-            # Apply multihead attention
-            attn_output, _ = self.multihead_attn(all_features, all_features, all_features)
-            attn_output = attn_output.mean(dim=1)  # Average over the camera dimension
-            attn_output = attn_output.repeat(1,len(self.camera_names))
-            obs_cond = torch.cat([attn_output, qpos], dim=1)
+            for t in range(T):
+                t_features = []
+                for cam_id in range(len(self.camera_names)):
+                    cam_image = image[:, t, cam_id]
+                    cam_features = nets["policy"]["backbones"][cam_id](cam_image)
+                    pool_features = nets["policy"]["pools"][cam_id](cam_features)
+                    pool_features = torch.flatten(pool_features, start_dim=1)
+                    out_features = nets["policy"]["linears"][cam_id](pool_features)
+                    t_features.append(out_features)
+                
+                t_features = torch.stack(t_features, dim=1)
+                attn_output, _ = self.multihead_attn(t_features, t_features, t_features)
+                attn_output = attn_output.mean(dim=1)
+                all_features.append(attn_output)
+            
+            all_features = torch.stack(all_features, dim=1)
+            
+            obs_cond = torch.cat([all_features, qpos], dim=2)
             obs_cond = obs_cond.reshape(B, -1)
-            obs_cond= obs_cond.repeat(1, self.observation_horizon)
 
-            # initialize action from Gaussian noise
+            if obs_cond.shape[1] != self.noise_pred_net.global_cond_dim:
+                obs_cond = obs_cond.repeat(1, self.noise_pred_net.global_cond_dim // obs_cond.shape[1])
+
+            # initiate actions
             noisy_action = torch.randn((B, Tp, action_dim), device=obs_cond.device)
 
-            # init scheduler
+            # initiate scheduler
             self.noise_scheduler.set_timesteps(self.num_inference_timesteps)
 
             for k in self.noise_scheduler.timesteps:
-                # predict noise
                 noise_pred = nets["policy"]["noise_pred_net"](
                     sample=noisy_action, timestep=k, global_cond=obs_cond
                 )
-
-                # inverse diffusion step (remove noise)
                 noisy_action = self.noise_scheduler.step(
                     model_output=noise_pred, timestep=k, sample=noisy_action
                 ).prev_sample
 
-            return noisy_action
+            return noisy_action    
 
     def serialize(self):
         return {
