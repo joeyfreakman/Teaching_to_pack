@@ -224,10 +224,10 @@ def load_merged_data(
     shuffled_indices = np.random.permutation(all_episode_indices)
     train_split = int(train_ratio * len(all_episode_indices))
     val_split = int((train_ratio + val_ratio) * len(all_episode_indices))
-
+    
     train_indices = shuffled_indices[:train_split]
     val_indices = shuffled_indices[train_split:val_split]
-    test_indices = shuffled_indices[val_split:]
+    pretest_indices = shuffled_indices[val_split:]
 
     train_datasets = [
         ImageDataset(
@@ -258,9 +258,9 @@ def load_merged_data(
         for dataset_dir in dataset_dirs
     ]
     
-    test_datasets = [
+    pretest_datasets = [
         ImageDataset(
-            [idx for d, idx in test_indices if d == dataset_dir],
+            [idx for d, idx in pretest_indices if d == dataset_dir],
             dataset_dir,
             camera_names,
             norm_stats,
@@ -272,12 +272,14 @@ def load_merged_data(
         )
         for dataset_dir in dataset_dirs
     ]
-    for dataset in train_datasets + val_datasets + test_datasets:
+    for dataset in train_datasets + val_datasets + pretest_datasets:
         if len(dataset) == 0:
             print(f"Warning: Empty dataset found in {dataset.dataset_dir}")
 
+    test_datasets = train_datasets + val_datasets + pretest_datasets
     merged_train_dataset = ConcatDataset(train_datasets)
     merged_val_dataset = ConcatDataset(val_datasets)
+    merged_pretest_dataset = ConcatDataset(pretest_datasets)
     merged_test_dataset = ConcatDataset(test_datasets)
 
     if dagger_ratio is not None:
@@ -327,6 +329,14 @@ def load_merged_data(
             prefetch_factor=4,
             persistent_workers=True,
         )
+    pretest_dataloader = DataLoader(
+        merged_pretest_dataset,
+        batch_size=batch_size_train,
+        shuffle=False,
+        pin_memory=True,
+        num_workers=2,
+        prefetch_factor=1,
+    )
     test_dataloader = DataLoader(
         merged_test_dataset,
         batch_size=batch_size_train,
@@ -335,7 +345,7 @@ def load_merged_data(
         num_workers=2,
         prefetch_factor=1,
     )
-    return train_dataloader, norm_stats, val_dataloader, test_dataloader
+    return train_dataloader, norm_stats, val_dataloader, pretest_dataloader, test_dataloader
 
 
 """
@@ -344,51 +354,51 @@ Test the Dataset class.
 Example usage:
 $ python new_image_dataset.py --dataset_dir /mnt/d/kit/ALR/dataset/ttp_compressed/
 """
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--dataset_dir", type=str, required=True, help="Path to the dataset directory"
-    )
-    args = parser.parse_args()
+# if __name__ == "__main__":
+#     parser = argparse.ArgumentParser()
+#     parser.add_argument(
+#         "--dataset_dir", type=str, required=True, help="Path to the dataset directory"
+#     )
+#     args = parser.parse_args()
 
-    camera_names = ["cam_high", "cam_low", "cam_left_wrist", "cam_right_wrist"]
-    history_len = 3
-    prediction_offset = 8
-    num_episodes = 50  # Just to sample from the first 50 episodes for testing
-    history_skip_frame = 10
-    norm_stats = ImageDataset.get_norm_stats([args.dataset_dir], [num_episodes])
-    max_len = history_len + prediction_offset + 1
+#     camera_names = ["cam_high", "cam_low", "cam_left_wrist", "cam_right_wrist"]
+#     history_len = 3
+#     prediction_offset = 8
+#     num_episodes = 50  # Just to sample from the first 50 episodes for testing
+#     history_skip_frame = 10
+#     norm_stats = ImageDataset.get_norm_stats([args.dataset_dir], [num_episodes])
+#     max_len = history_len + prediction_offset + 1
     
-    dataset = ImageDataset(
-        list(range(num_episodes)),
-        args.dataset_dir,
-        camera_names,
-        norm_stats,
-        history_skip_frame,
-        history_len,
-        prediction_offset,
-        max_len,
-        policy_class="Diffusion",
-    )
+#     dataset = ImageDataset(
+#         list(range(num_episodes)),
+#         args.dataset_dir,
+#         camera_names,
+#         norm_stats,
+#         history_skip_frame,
+#         history_len,
+#         prediction_offset,
+#         max_len,
+#         policy_class="Diffusion",
+#     )
     
-    idx = np.random.randint(0, len(dataset))
-    image_sequence, action_data, is_pad = dataset[idx]
+#     idx = np.random.randint(0, len(dataset))
+#     image_sequence, action_data, is_pad = dataset[idx]
 
-    print(f"Sampled episode index: {idx}")
+#     print(f"Sampled episode index: {idx}")
 
-    output_dir = os.path.join(dataset.dataset_dir,"plot")
-    os.makedirs(output_dir, exist_ok=True)
+#     output_dir = os.path.join(dataset.dataset_dir,"plot")
+#     os.makedirs(output_dir, exist_ok=True)
     
-    for t in tqdm(range(history_len+prediction_offset+1)):
-        plt.figure(figsize=(10, 5))
-        for cam_idx, cam_name in enumerate(camera_names):
-            plt.subplot(1, len(camera_names), cam_idx + 1)
-            img_rgb = cv2.cvtColor(
-                image_sequence[t, cam_idx].permute(1, 2, 0).numpy(), cv2.COLOR_BGR2RGB
-            )
-            plt.imshow(img_rgb)
-            plt.title(f"{cam_name} at timestep {t}")
-        plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, f"image_sequence_timestep_{t}.png"))
-        print(f"Saved image_sequence_timestep_{t}.png")
-        plt.close()
+#     for t in tqdm(range(history_len+prediction_offset+1)):
+#         plt.figure(figsize=(10, 5))
+#         for cam_idx, cam_name in enumerate(camera_names):
+#             plt.subplot(1, len(camera_names), cam_idx + 1)
+#             img_rgb = cv2.cvtColor(
+#                 image_sequence[t, cam_idx].permute(1, 2, 0).numpy(), cv2.COLOR_BGR2RGB
+#             )
+#             plt.imshow(img_rgb)
+#             plt.title(f"{cam_name} at timestep {t}")
+#         plt.tight_layout()
+#         plt.savefig(os.path.join(output_dir, f"image_sequence_timestep_{t}.png"))
+#         print(f"Saved image_sequence_timestep_{t}.png")
+#         plt.close()
