@@ -21,9 +21,9 @@ from src.policy.image_ddpm import DiffusionPolicy
 from src.model.util import is_multi_gpu_checkpoint, memory_monitor
 from src.aloha.aloha_scripts.constants import DT, PUPPET_GRIPPER_JOINT_OPEN
 from src.config.dataset_config import TASK_CONFIGS, DATA_DIR
-# from src.aloha.aloha_scripts.real_env import make_real_env  
-# from src.aloha.aloha_scripts.robot_utils import move_grippers
-# from src.aloha.aloha_scripts.visualize_episodes import save_videos
+from src.aloha.aloha_scripts.real_env import make_real_env  
+from src.aloha.aloha_scripts.robot_utils import move_grippers
+from src.aloha.aloha_scripts.visualize_episodes import save_videos,load_hdf5,STATE_NAMES
 
 
 CROP_TOP = False  # for aloha pro, whose top camera is high
@@ -123,9 +123,9 @@ def main(args):
         "lr": args["lr"],
         "camera_names": camera_names,
         "action_dim": 14,
-        "observation_horizon": args["history_len"]+args["prediction_offset"]+1,
-        "action_horizon": 16,  # TODO not used
-        "prediction_horizon": args["chunk_size"],
+        "observation_horizon": args["history_len"]+1,
+        "action_horizon": 8,  # TODO 
+        "prediction_horizon": args["history_len"]+args["prediction_offset"]+1,
         "num_queries": args["chunk_size"],
         "num_inference_timesteps": 10,
         "multi_gpu": args["multi_gpu"],
@@ -697,8 +697,6 @@ def train_ddpm(train_dataloader, val_dataloader, pretest_dataloader, config):
     with torch.no_grad():
         for batch in tqdm(pretest_dataloader):
             try:
-                # image_data, qpos_data, action_data, is_pad = [item.cuda() for item in batch]
-                # outputs = policy(image_data, qpos_data)
                 forward_dict = forward_pass(batch, policy)
                 loss = forward_dict["loss"]
                 test_loss += loss.item()
@@ -741,15 +739,16 @@ def test_ddpm(test_dataloader, config, ckpt_name):
     policy.cuda()
     policy.eval()
     print(f"Loaded: {ckpt_path}")
+
+    # Load stats for post-processing actions
     stats_path = os.path.join(ckpt_dir, f"dataset_stats.pkl")
     with open(stats_path, "rb") as f:
         stats = pickle.load(f)
     post_process = (
-            lambda a: ((a + 1) / 2) * (stats["action_max"] - stats["action_min"])
-            + stats["action_min"]
-        )
-    
-    # START_ARM_POSE = [0, -0.96, 1.16, 0, -0.3, 0, 0.02239, -0.02239, 0, -0.96, 1.16, 0, -0.3, 0, 0.02239, -0.02239]
+        lambda a: ((a + 1) / 2) * (stats["action_max"] - stats["action_min"])
+        + stats["action_min"]
+    )
+
     # Create save directory
     save_dir = os.path.join(ckpt_dir, "test_results")
     os.makedirs(save_dir, exist_ok=True)
@@ -758,12 +757,12 @@ def test_ddpm(test_dataloader, config, ckpt_name):
         timesteps = np.arange(true_actions.shape[0])
         fig, axes = plt.subplots(5, 3, figsize=(15, 10))
         axes = axes.flatten()
-        
+        all_names = [name + '_left' for name in STATE_NAMES] + [name + '_right' for name in STATE_NAMES]
         for i in range(14):
             ax = axes[i]
-            ax.plot(timesteps, pred_actions[:true_actions.shape[0], i], label='Predicted', color='red', linestyle='--')
             ax.plot(timesteps, true_actions[:, i], label='True', color='blue')
-            ax.set_title(f'Joint {i+1}')
+            ax.plot(timesteps, pred_actions[:true_actions.shape[0], i], label='Predicted', color='red', linestyle='--')
+            ax.set_title(f'Joint {i}: {all_names[i]}')
             ax.set_xlabel('Timesteps')
             ax.set_ylabel('Position')
             ax.grid(True)
@@ -780,10 +779,10 @@ def test_ddpm(test_dataloader, config, ckpt_name):
     with torch.no_grad():
         for idx, data in enumerate(tqdm(test_dataloader)):
             images, true_actions, _ = [item.cuda() for item in data]
-            predicted_actions = policy(images)
+            denoised_actions,predicted_actions = policy(images)
             
             # Assuming the predicted_actions shape is [batch_size, T, action_dim]
-            batch_size = predicted_actions.shape[0]
+            batch_size = denoised_actions.shape[0]
             num_batches += batch_size
 
             for i in range(batch_size):
@@ -792,10 +791,10 @@ def test_ddpm(test_dataloader, config, ckpt_name):
                 
                 plot_joint_positions(pred_actions, true_actions_np, idx * batch_size + i)
                 
-                # Compute loss
-                loss = F.mse_loss(torch.tensor(pred_actions[:true_actions_np.shape[0]]), torch.tensor(true_actions_np))
+                # Compute loss, truncating pred_actions to match the length of true_actions
+                loss = F.mse_loss(torch.tensor(pred_actions), torch.tensor(true_actions_np))
                 total_loss += loss.item()
-                print(f"batch_loss:{loss}")
+                print(f"Batch {idx * batch_size + i}, MSE Loss: {loss:.4f}")
 
     avg_loss = total_loss / num_batches
     print(f"Testing completed. Results saved in: {save_dir}")
@@ -821,9 +820,9 @@ if __name__ == "__main__":
     parser.add_argument('--gpu', action='store', type=int, help='gpu', default=0, required=False)
     parser.add_argument('--multi_gpu', action='store_true')
     parser.add_argument('--max_skill_len', action='store', type=int, help='max_skill_len', required=False)
-    parser.add_argument('--history_len', type=int, default=2)
-    parser.add_argument('--prediction_offset', type=int, default=5)
-    parser.add_argument('--history_skip_frame', type=int, default=10)
+    parser.add_argument('--history_len', type=int, default=1)
+    parser.add_argument('--prediction_offset', type=int, default=14)
+    parser.add_argument('--history_skip_frame', type=int, default=1)
     parser.add_argument('--test', action='store_true',default=False)
     args = parser.parse_args()
     config = vars(args)
