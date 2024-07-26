@@ -16,7 +16,7 @@ class DiffusionPolicy(nn.Module):
         self.prediction_horizon = args_override["prediction_horizon"]
         self.num_inference_timesteps = args_override["num_inference_timesteps"]
         self.lr = args_override["lr"]
-        self.weight_decay = 0
+        self.weight_decay = 1e-6
 
         self.num_kp = 32
         self.feature_dimension = 64
@@ -181,12 +181,6 @@ class DiffusionPolicy(nn.Module):
             all_features = torch.stack(all_features, dim=1)
             
             obs_cond = all_features.reshape(B, -1)
-            
-            # Match the shape of obs_cond and noise_pred_net.global_cond_dim
-            # if obs_cond.shape[1] < self.noise_pred_net.global_cond_dim:
-            #     repeat_factor = self.noise_pred_net.global_cond_dim // obs_cond.shape[1] + 1
-            #     obs_cond = obs_cond.repeat(1, repeat_factor)
-            # obs_cond = obs_cond[:, :self.noise_pred_net.global_cond_dim]
 
             # Initiate actions
             noisy_action = torch.randn((B, Tp, action_dim), device=obs_cond.device)
@@ -202,7 +196,9 @@ class DiffusionPolicy(nn.Module):
                     model_output=noise_pred, timestep=k, sample=noisy_action
                 ).prev_sample
 
-            return noisy_action
+            pred_action = noisy_action[:,:Ta,:]
+
+            return noisy_action, pred_action
 
     def serialize(self):
         return {

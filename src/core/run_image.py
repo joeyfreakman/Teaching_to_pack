@@ -23,7 +23,7 @@ from src.aloha.aloha_scripts.constants import DT, PUPPET_GRIPPER_JOINT_OPEN
 from src.config.dataset_config import TASK_CONFIGS, DATA_DIR
 from src.aloha.aloha_scripts.real_env import make_real_env  
 from src.aloha.aloha_scripts.robot_utils import move_grippers
-from src.aloha.aloha_scripts.visualize_episodes import save_videos
+from src.aloha.aloha_scripts.visualize_episodes import save_videos,load_hdf5,STATE_NAMES
 
 
 CROP_TOP = False  # for aloha pro, whose top camera is high
@@ -59,15 +59,16 @@ def main(args):
         if is_eval:
             # run_name += ".eval"
             log_wandb = False
-        # elif is_test:
-        #     run_name = ckpt_dir.split("/")[-1] + f"seed.{args['seed']}.test"
-        #     wandb.init(
-        #         project="task1",
-        #         entity="joeywang-of",
-        #         name=run_name,
-        #         config=args,
-        #         resume="allow",
-        #     )
+        elif is_test:
+            run_name = ckpt_dir.split("/")[-1] + f"seed.{args['seed']}.test"
+            wandb.init(
+                project="task1",
+                entity="joeywang-of",
+                name=run_name,
+                config=args,
+                resume="allow",
+                mode="disabled",
+            )
         else:
             run_name = ckpt_dir.split("/")[-1] + f".{args['seed']}"
             wandb_run_id_path = os.path.join(ckpt_dir, "wandb_run_id.txt")
@@ -123,9 +124,9 @@ def main(args):
         "lr": args["lr"],
         "camera_names": camera_names,
         "action_dim": 14,
-        "observation_horizon": args["history_len"]+args["prediction_offset"]+1,
-        "action_horizon": 16,  # TODO not used
-        "prediction_horizon": args["chunk_size"],
+        "observation_horizon": args["history_len"]+1,
+        "action_horizon": 8,  # TODO 
+        "prediction_horizon": args["history_len"]+args["prediction_offset"]+1,
         "num_queries": args["chunk_size"],
         "num_inference_timesteps": 10,
         "multi_gpu": args["multi_gpu"],
@@ -697,8 +698,6 @@ def train_ddpm(train_dataloader, val_dataloader, pretest_dataloader, config):
     with torch.no_grad():
         for batch in tqdm(pretest_dataloader):
             try:
-                # image_data, qpos_data, action_data, is_pad = [item.cuda() for item in batch]
-                # outputs = policy(image_data, qpos_data)
                 forward_dict = forward_pass(batch, policy)
                 loss = forward_dict["loss"]
                 test_loss += loss.item()
@@ -740,44 +739,67 @@ def test_ddpm(test_dataloader, config, ckpt_name):
     print(loading_status)
     policy.cuda()
     policy.eval()
+    print(f"Loaded: {ckpt_path}")
+
+    # Load stats for post-processing actions
+    stats_path = os.path.join(ckpt_dir, f"dataset_stats.pkl")
+    with open(stats_path, "rb") as f:
+        stats = pickle.load(f)
+    post_process = (
+        lambda a: ((a + 1) / 2) * (stats["action_max"] - stats["action_min"])
+        + stats["action_min"]
+    )
 
     # Create save directory
     save_dir = os.path.join(ckpt_dir, "test_results")
     os.makedirs(save_dir, exist_ok=True)
 
-    def plot_joint_positions(actions, idx):
-        plt.figure(figsize=(12, 8))
-        timesteps = np.arange(actions.shape[0])
-        # Left arm joints (1-6)
-        for i in range(6):
-            plt.plot(timesteps, actions[:, i], label=f'Left Arm Joint {i+1}')
-        # Left gripper (7)
-        plt.plot(timesteps, actions[:, 6], label='Left Gripper', linestyle='--', color='black')
-        # Right arm joints (8-13)
-        for i in range(6):
-            plt.plot(timesteps, actions[:, 7+i], label=f'Right Arm Joint {i+1}')
-        # Right gripper (14)
-        plt.plot(timesteps, actions[:, 13], label='Right Gripper', linestyle='--', color='gray')
+    def plot_joint_positions(pred_actions, true_actions, idx):
+        timesteps = np.arange(true_actions.shape[0])
+        fig, axes = plt.subplots(5, 3, figsize=(15, 10))
+        axes = axes.flatten()
+        all_names = [name + '_left' for name in STATE_NAMES] + [name + '_right' for name in STATE_NAMES]
+        for i in range(14):
+            ax = axes[i]
+            ax.plot(timesteps, true_actions[:, i], label='True', color='blue')
+            ax.plot(timesteps, pred_actions[:true_actions.shape[0], i], label='Predicted', color='red', linestyle='--')
+            ax.set_title(f'Joint {i}: {all_names[i]}')
+            ax.set_xlabel('Timesteps')
+            ax.set_ylabel('Position')
+            ax.grid(True)
+            if i == 0:  # Add legend to the first subplot
+                ax.legend()
         
-        plt.xlabel('Timesteps')
-        plt.ylabel('Joint Positions')
-        plt.legend()
-        plt.title(f'Joint Positions for Sequence {idx}')
-        plt.grid(True)
+        plt.tight_layout()
         plt.savefig(os.path.join(save_dir, f'joint_positions_{idx}.png'))
         plt.close()
 
+    total_loss = 0
+    num_batches = 0
+
     with torch.no_grad():
         for idx, data in enumerate(tqdm(test_dataloader)):
-            images, _, _ = [item.cuda() for item in data]
-            predicted_actions = policy(images)
-
+            images, true_actions, _ = [item.cuda() for item in data]
+            denoised_actions,predicted_actions = policy(images)
+            
             # Assuming the predicted_actions shape is [batch_size, T, action_dim]
-            for i in range(predicted_actions.shape[0]):
-                actions = predicted_actions[i].cpu().numpy()
-                plot_joint_positions(actions, idx * predicted_actions.shape[0] + i)
+            batch_size = denoised_actions.shape[0]
+            num_batches += batch_size
 
-    print("Testing completed. Results saved in:", save_dir)
+            for i in range(batch_size):
+                pred_actions = post_process(predicted_actions[i].cpu().numpy())
+                true_actions_np = post_process(true_actions[i].cpu().numpy())
+                
+                plot_joint_positions(pred_actions, true_actions_np, idx * batch_size + i)
+                
+                # Compute loss, truncating pred_actions to match the length of true_actions
+                loss = F.mse_loss(torch.tensor(pred_actions), torch.tensor(true_actions_np))
+                total_loss += loss.item()
+                print(f"Batch {idx * batch_size + i}, MSE Loss: {loss:.4f}")
+
+    avg_loss = total_loss / num_batches
+    print(f"Testing completed. Results saved in: {save_dir}")
+    print(f"Average MSE Loss: {avg_loss:.4f}")
 
     
 
@@ -799,9 +821,9 @@ if __name__ == "__main__":
     parser.add_argument('--gpu', action='store', type=int, help='gpu', default=0, required=False)
     parser.add_argument('--multi_gpu', action='store_true')
     parser.add_argument('--max_skill_len', action='store', type=int, help='max_skill_len', required=False)
-    parser.add_argument('--history_len', type=int, default=2)
-    parser.add_argument('--prediction_offset', type=int, default=5)
-    parser.add_argument('--history_skip_frame', type=int, default=10)
+    parser.add_argument('--history_len', type=int, default=1)
+    parser.add_argument('--prediction_offset', type=int, default=14)
+    parser.add_argument('--history_skip_frame', type=int, default=1)
     parser.add_argument('--test', action='store_true',default=False)
     args = parser.parse_args()
     config = vars(args)
