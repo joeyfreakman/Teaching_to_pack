@@ -21,9 +21,9 @@ from src.policy.image_ddpm import DiffusionPolicy
 from src.model.util import is_multi_gpu_checkpoint, memory_monitor
 from src.aloha.aloha_scripts.constants import DT, PUPPET_GRIPPER_JOINT_OPEN
 from src.config.dataset_config import TASK_CONFIGS, DATA_DIR
-from src.aloha.aloha_scripts.real_env import make_real_env  
-from src.aloha.aloha_scripts.robot_utils import move_grippers
-from src.aloha.aloha_scripts.visualize_episodes import save_videos
+# from src.aloha.aloha_scripts.real_env import make_real_env  
+# from src.aloha.aloha_scripts.robot_utils import move_grippers
+# from src.aloha.aloha_scripts.visualize_episodes import save_videos
 
 
 CROP_TOP = False  # for aloha pro, whose top camera is high
@@ -59,15 +59,15 @@ def main(args):
         if is_eval:
             # run_name += ".eval"
             log_wandb = False
-        # elif is_test:
-        #     run_name = ckpt_dir.split("/")[-1] + f"seed.{args['seed']}.test"
-        #     wandb.init(
-        #         project="task1",
-        #         entity="joeywang-of",
-        #         name=run_name,
-        #         config=args,
-        #         resume="allow",
-        #     )
+        elif is_test:
+            run_name = ckpt_dir.split("/")[-1] + f"seed.{args['seed']}.test"
+            wandb.init(
+                project="task1",
+                entity="joeywang-of",
+                name=run_name,
+                config=args,
+                resume="allow",
+            )
         else:
             run_name = ckpt_dir.split("/")[-1] + f".{args['seed']}"
             wandb_run_id_path = os.path.join(ckpt_dir, "wandb_run_id.txt")
@@ -108,7 +108,7 @@ def main(args):
         task_config = TASK_CONFIGS[task]
         dataset_dirs.append(DATA_DIR)
         num_episodes_list.append(task_config["num_episodes"])
-        max_episode_len = max(max_episode_len, task_config["episode_len"])
+        max_episode_len = task_config["episode_len"]
         camera_names = task_config["camera_names"]
 
     max_skill_len = (
@@ -154,16 +154,16 @@ def main(args):
         ckpt_names = (
             [f"policy_last.ckpt"] if CKPT == 0 else [f"policy_epoch_{CKPT}_seed_0.ckpt"]
         )
-        results = []
-        for ckpt_name in ckpt_names:
-            success_rate, avg_return = eval_ddpm(
-                config, ckpt_name, save_episode=True, dataset_dirs=dataset_dirs
-            )
-            results.append([ckpt_name, success_rate, avg_return])
+        # results = []
+        # for ckpt_name in ckpt_names:
+        #     success_rate, avg_return = eval_ddpm(
+        #         config, ckpt_name, save_episode=True, dataset_dirs=dataset_dirs
+        #     )
+        #     results.append([ckpt_name, success_rate, avg_return])
 
-        for ckpt_name, success_rate, avg_return in results:
-            print(f"{ckpt_name}: {success_rate=} {avg_return=}")
-        print()
+        # for ckpt_name, success_rate, avg_return in results:
+        #     print(f"{ckpt_name}: {success_rate=} {avg_return=}")
+        # print()
         exit()
 
 
@@ -289,220 +289,220 @@ def get_image(ts, camera_names, crop_top=CROP_TOP, save_dir=None, t=None):
     return curr_image
 
 
-def eval_ddpm(config:dict, ckpt_name, save_episode=True, dataset_dirs=None):
-    set_seed(1000)
-    ckpt_dir = config["ckpt_dir"]
-    state_dim = config["state_dim"]
-    policy_class = config["policy_class"]
-    onscreen_render = config["onscreen_render"]
-    policy_config = config["policy_config"]
-    camera_names = config["camera_names"]
-    max_timesteps = config["episode_len"]
-    temporal_agg = config["temporal_agg"]
-    onscreen_cam = "cam_high"
-    log_wandb = config["log_wandb"]
+# def eval_ddpm(config:dict, ckpt_name, save_episode=True, dataset_dirs=None):
+#     set_seed(1000)
+#     ckpt_dir = config["ckpt_dir"]
+#     state_dim = config["state_dim"]
+#     policy_class = config["policy_class"]
+#     onscreen_render = config["onscreen_render"]
+#     policy_config = config["policy_config"]
+#     camera_names = config["camera_names"]
+#     max_timesteps = config["episode_len"]
+#     temporal_agg = config["temporal_agg"]
+#     onscreen_cam = "cam_high"
+#     log_wandb = config["log_wandb"]
 
-    # Load policy and stats
-    ckpt_path = os.path.join(ckpt_dir, ckpt_name)
-    policy = make_policy(policy_class, policy_config)
-    model_state_dict = torch.load(ckpt_path)["model_state_dict"]
-    if is_multi_gpu_checkpoint(model_state_dict):
-        print("The checkpoint was trained on multiple GPUs.")
-        model_state_dict = {
-            k.replace("module.", "", 1): v for k, v in model_state_dict.items()
-        }
-    loading_status = policy.deserialize(model_state_dict)
-    print(loading_status)
-    policy.cuda()
-    policy.eval()
-    print(f"Loaded: {ckpt_path}")
-    stats_path = os.path.join(ckpt_dir, f"dataset_stats.pkl")
-    with open(stats_path, "rb") as f:
-        stats = pickle.load(f)
+#     # Load policy and stats
+#     ckpt_path = os.path.join(ckpt_dir, ckpt_name)
+#     policy = make_policy(policy_class, policy_config)
+#     model_state_dict = torch.load(ckpt_path)["model_state_dict"]
+#     if is_multi_gpu_checkpoint(model_state_dict):
+#         print("The checkpoint was trained on multiple GPUs.")
+#         model_state_dict = {
+#             k.replace("module.", "", 1): v for k, v in model_state_dict.items()
+#         }
+#     loading_status = policy.deserialize(model_state_dict)
+#     print(loading_status)
+#     policy.cuda()
+#     policy.eval()
+#     print(f"Loaded: {ckpt_path}")
+#     stats_path = os.path.join(ckpt_dir, f"dataset_stats.pkl")
+#     with open(stats_path, "rb") as f:
+#         stats = pickle.load(f)
 
-    pre_process = lambda s_qpos: (s_qpos - stats["qpos_mean"]) / stats["qpos_std"]
+#     pre_process = lambda s_qpos: (s_qpos - stats["qpos_mean"]) / stats["qpos_std"]
     
-    post_process = (
-            lambda a: ((a + 1) / 2) * (stats["action_max"] - stats["action_min"])
-            + stats["action_min"]
-        )
+#     post_process = (
+#             lambda a: ((a + 1) / 2) * (stats["action_max"] - stats["action_min"])
+#             + stats["action_min"]
+#         )
  
-    env = make_real_env(init_node=True)
-    env_max_reward = 0
+#     env = make_real_env(init_node=True)
+#     env_max_reward = 0
 
-    query_frequency = policy_config["num_queries"]
-    if temporal_agg:
-        query_frequency = 25
-        num_queries = policy_config["num_queries"]
+#     query_frequency = policy_config["num_queries"]
+#     if temporal_agg:
+#         query_frequency = 25
+#         num_queries = policy_config["num_queries"]
 
-    max_timesteps = int(max_timesteps * 1)  # May increase for real-world tasks
+#     max_timesteps = int(max_timesteps * 1)  # May increase for real-world tasks
 
-    num_rollouts = 50
-    episode_returns = []
-    highest_rewards = []
+#     num_rollouts = 50
+#     episode_returns = []
+#     highest_rewards = []
 
-    n_existing_rollouts = (
-        len([f for f in os.listdir(ckpt_dir) if f.startswith("video")])
-        if save_episode
-        else 0
-    )
-    print(f"{n_existing_rollouts=}")
+#     n_existing_rollouts = (
+#         len([f for f in os.listdir(ckpt_dir) if f.startswith("video")])
+#         if save_episode
+#         else 0
+#     )
+#     print(f"{n_existing_rollouts=}")
 
-    for rollout_id in range(num_rollouts):
-        ts = env.reset()
+#     for rollout_id in range(num_rollouts):
+#         ts = env.reset()
 
-        ### Onscreen render
-        if onscreen_render:
-            ax = plt.subplot()
-            plt_img = ax.imshow(
-                env.physics.render(height=480, width=640, camera_id=onscreen_cam)
-            )
-            plt.ion()
+#         ### Onscreen render
+#         if onscreen_render:
+#             ax = plt.subplot()
+#             plt_img = ax.imshow(
+#                 env.physics.render(height=480, width=640, camera_id=onscreen_cam)
+#             )
+#             plt.ion()
 
-        ### Evaluation loop
-        if temporal_agg:
-            all_time_actions = torch.zeros(
-                [max_timesteps, max_timesteps + num_queries, state_dim]
-            ).cuda()
+#         ### Evaluation loop
+#         if temporal_agg:
+#             all_time_actions = torch.zeros(
+#                 [max_timesteps, max_timesteps + num_queries, state_dim]
+#             ).cuda()
 
-        qpos_history = torch.zeros((1, max_timesteps, state_dim)).cuda()
-        image_list = []  # For visualization
-        qpos_list = []
-        target_qpos_list = []
-        rewards = []
-        with torch.inference_mode():
-            for t in range(max_timesteps):
-                ### Update onscreen render and wait for DT
-                if onscreen_render:
-                    image = env.physics.render(
-                        height=480, width=640, camera_id=onscreen_cam
-                    )
-                    plt_img.set_data(image)
-                    plt.pause(DT)
+#         qpos_history = torch.zeros((1, max_timesteps, state_dim)).cuda()
+#         image_list = []  # For visualization
+#         qpos_list = []
+#         target_qpos_list = []
+#         rewards = []
+#         with torch.inference_mode():
+#             for t in range(max_timesteps):
+#                 ### Update onscreen render and wait for DT
+#                 if onscreen_render:
+#                     image = env.physics.render(
+#                         height=480, width=640, camera_id=onscreen_cam
+#                     )
+#                     plt_img.set_data(image)
+#                     plt.pause(DT)
 
-                ### Process previous timestep to get qpos and image_list
-                obs = ts.observation
-                if "images" in obs:
-                    image_list.append(obs["images"])
-                else:
-                    image_list.append({"main": obs["image"]})
-                qpos_numpy = np.array(obs["qpos"])
-                qpos = pre_process(qpos_numpy)
-                qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
-                qpos_history[:, t] = qpos
+#                 ### Process previous timestep to get qpos and image_list
+#                 obs = ts.observation
+#                 if "images" in obs:
+#                     image_list.append(obs["images"])
+#                 else:
+#                     image_list.append({"main": obs["image"]})
+#                 qpos_numpy = np.array(obs["qpos"])
+#                 qpos = pre_process(qpos_numpy)
+#                 qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
+#                 qpos_history[:, t] = qpos
 
-                ### Query policy
-                if policy_class in ["Diffusion"]:
-                    if t % query_frequency == 0:
-                        curr_image = get_image(
-                            ts, camera_names, save_dir=ckpt_dir if t == 0 else None
-                        )
-                        all_actions = policy(qpos, curr_image)
-                    if temporal_agg:
-                        all_time_actions[[t], t : t + num_queries] = all_actions
-                        actions_for_curr_step = all_time_actions[:, t]
-                        actions_populated = torch.all(
-                            actions_for_curr_step != 0, axis=1
-                        )
-                        actions_for_curr_step = actions_for_curr_step[actions_populated]
-                        k = 0.01
-                        exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
-                        exp_weights = exp_weights / exp_weights.sum()
-                        exp_weights = (
-                            torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
-                        )
-                        raw_action = (actions_for_curr_step * exp_weights).sum(
-                            dim=0, keepdim=True
-                        )
-                    else:
-                        raw_action = all_actions[:, t % query_frequency]
+#                 ### Query policy
+#                 if policy_class in ["Diffusion"]:
+#                     if t % query_frequency == 0:
+#                         curr_image = get_image(
+#                             ts, camera_names, save_dir=ckpt_dir if t == 0 else None
+#                         )
+#                         all_actions = policy(qpos, curr_image)
+#                     if temporal_agg:
+#                         all_time_actions[[t], t : t + num_queries] = all_actions
+#                         actions_for_curr_step = all_time_actions[:, t]
+#                         actions_populated = torch.all(
+#                             actions_for_curr_step != 0, axis=1
+#                         )
+#                         actions_for_curr_step = actions_for_curr_step[actions_populated]
+#                         k = 0.01
+#                         exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
+#                         exp_weights = exp_weights / exp_weights.sum()
+#                         exp_weights = (
+#                             torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
+#                         )
+#                         raw_action = (actions_for_curr_step * exp_weights).sum(
+#                             dim=0, keepdim=True
+#                         )
+#                     else:
+#                         raw_action = all_actions[:, t % query_frequency]
                 
-                else:
-                    raise NotImplementedError
+#                 else:
+#                     raise NotImplementedError
 
-                ### Post-process actions
-                raw_action = raw_action.squeeze(0).cpu().numpy()
-                action = post_process(raw_action)
-                # Only update if the absolute value of the action is greater than 0.1
-                if np.any(np.abs(action) > 0.1):
-                    target_qpos = action
+#                 ### Post-process actions
+#                 raw_action = raw_action.squeeze(0).cpu().numpy()
+#                 action = post_process(raw_action)
+#                 # Only update if the absolute value of the action is greater than 0.1
+#                 if np.any(np.abs(action) > 0.1):
+#                     target_qpos = action
 
-                ts = env.step(target_qpos)
+#                 ts = env.step(target_qpos)
 
-                ### For visualization
-                qpos_list.append(qpos_numpy)
-                target_qpos_list.append(target_qpos)
-                rewards.append(ts.reward)
+#                 ### For visualization
+#                 qpos_list.append(qpos_numpy)
+#                 target_qpos_list.append(target_qpos)
+#                 rewards.append(ts.reward)
 
-            plt.close()
+#             plt.close()
 
-        move_grippers(
-            [env.puppet_bot_left, env.puppet_bot_right],
-            [PUPPET_GRIPPER_JOINT_OPEN] * 2,
-            move_time=0.5,
-        )  # Open grippers
+#         move_grippers(
+#             [env.puppet_bot_left, env.puppet_bot_right],
+#             [PUPPET_GRIPPER_JOINT_OPEN] * 2,
+#             move_time=0.5,
+#         )  # Open grippers
 
-        rewards = np.array(rewards)
-        episode_return = np.sum(rewards[rewards != None])
-        episode_returns.append(episode_return)
-        episode_highest_reward = np.max(rewards)
-        highest_rewards.append(episode_highest_reward)
-        print(
-            f"Rollout {rollout_id}\n{episode_return=}, {episode_highest_reward=}, {env_max_reward=}, Success: {episode_highest_reward==env_max_reward}"
-        )
-        if log_wandb:
-            wandb.log(
-                {
-                    "test/episode_return": episode_return,
-                    "test/episode_highest_reward": episode_highest_reward,
-                    "test/env_max_reward": env_max_reward,
-                    "test/success": episode_highest_reward == env_max_reward,
-                },
-                step=rollout_id,
-            )
+#         rewards = np.array(rewards)
+#         episode_return = np.sum(rewards[rewards != None])
+#         episode_returns.append(episode_return)
+#         episode_highest_reward = np.max(rewards)
+#         highest_rewards.append(episode_highest_reward)
+#         print(
+#             f"Rollout {rollout_id}\n{episode_return=}, {episode_highest_reward=}, {env_max_reward=}, Success: {episode_highest_reward==env_max_reward}"
+#         )
+#         if log_wandb:
+#             wandb.log(
+#                 {
+#                     "test/episode_return": episode_return,
+#                     "test/episode_highest_reward": episode_highest_reward,
+#                     "test/env_max_reward": env_max_reward,
+#                     "test/success": episode_highest_reward == env_max_reward,
+#                 },
+#                 step=rollout_id,
+#             )
 
-        if save_episode:
-            video_name = f"video{rollout_id+n_existing_rollouts}.mp4"
-            save_videos(
-                image_list,
-                DT,
-                video_path=os.path.join(ckpt_dir, video_name),
-                cam_names=camera_names,
-            )
-            if log_wandb:
-                wandb.log(
-                    {
-                        "test/video": wandb.Video(
-                            os.path.join(ckpt_dir, f"video{rollout_id}.mp4"),
-                            fps=50,
-                            format="mp4",
-                        )
-                    },
-                    step=rollout_id,
-                )
+#         if save_episode:
+#             video_name = f"video{rollout_id+n_existing_rollouts}.mp4"
+#             save_videos(
+#                 image_list,
+#                 DT,
+#                 video_path=os.path.join(ckpt_dir, video_name),
+#                 cam_names=camera_names,
+#             )
+#             if log_wandb:
+#                 wandb.log(
+#                     {
+#                         "test/video": wandb.Video(
+#                             os.path.join(ckpt_dir, f"video{rollout_id}.mp4"),
+#                             fps=50,
+#                             format="mp4",
+#                         )
+#                     },
+#                     step=rollout_id,
+#                 )
 
-    success_rate = np.mean(np.array(highest_rewards) == env_max_reward)
-    avg_return = np.mean(episode_returns)
-    summary_str = f"\nSuccess rate: {success_rate}\nAverage return: {avg_return}\n\n"
-    for r in range(env_max_reward + 1):
-        more_or_equal_r = (np.array(highest_rewards) >= r).sum()
-        more_or_equal_r_rate = more_or_equal_r / num_rollouts
-        summary_str += f"Reward >= {r}: {more_or_equal_r}/{num_rollouts} = {more_or_equal_r_rate*100}%\n"
+#     success_rate = np.mean(np.array(highest_rewards) == env_max_reward)
+#     avg_return = np.mean(episode_returns)
+#     summary_str = f"\nSuccess rate: {success_rate}\nAverage return: {avg_return}\n\n"
+#     for r in range(env_max_reward + 1):
+#         more_or_equal_r = (np.array(highest_rewards) >= r).sum()
+#         more_or_equal_r_rate = more_or_equal_r / num_rollouts
+#         summary_str += f"Reward >= {r}: {more_or_equal_r}/{num_rollouts} = {more_or_equal_r_rate*100}%\n"
 
-    print(summary_str)
+#     print(summary_str)
 
-    # Save success rate to txt
-    result_file_name = "result_" + ckpt_name.split(".")[0] + ".txt"
-    with open(os.path.join(ckpt_dir, result_file_name), "w") as f:
-        f.write(summary_str)
-        f.write(repr(episode_returns))
-        f.write("\n\n")
-        f.write(repr(highest_rewards))
+#     # Save success rate to txt
+#     result_file_name = "result_" + ckpt_name.split(".")[0] + ".txt"
+#     with open(os.path.join(ckpt_dir, result_file_name), "w") as f:
+#         f.write(summary_str)
+#         f.write(repr(episode_returns))
+#         f.write("\n\n")
+#         f.write(repr(highest_rewards))
 
-    if log_wandb:
-        wandb.log({"test/success_rate": success_rate, "test/avg_return": avg_return})
+#     if log_wandb:
+#         wandb.log({"test/success_rate": success_rate, "test/avg_return": avg_return})
 
-    return success_rate, avg_return
+#     return success_rate, avg_return
 
 
 def forward_pass(data, policy):
@@ -740,44 +740,66 @@ def test_ddpm(test_dataloader, config, ckpt_name):
     print(loading_status)
     policy.cuda()
     policy.eval()
-
+    print(f"Loaded: {ckpt_path}")
+    stats_path = os.path.join(ckpt_dir, f"dataset_stats.pkl")
+    with open(stats_path, "rb") as f:
+        stats = pickle.load(f)
+    post_process = (
+            lambda a: ((a + 1) / 2) * (stats["action_max"] - stats["action_min"])
+            + stats["action_min"]
+        )
+    
+    # START_ARM_POSE = [0, -0.96, 1.16, 0, -0.3, 0, 0.02239, -0.02239, 0, -0.96, 1.16, 0, -0.3, 0, 0.02239, -0.02239]
     # Create save directory
     save_dir = os.path.join(ckpt_dir, "test_results")
     os.makedirs(save_dir, exist_ok=True)
 
-    def plot_joint_positions(actions, idx):
-        plt.figure(figsize=(12, 8))
-        timesteps = np.arange(actions.shape[0])
-        # Left arm joints (1-6)
-        for i in range(6):
-            plt.plot(timesteps, actions[:, i], label=f'Left Arm Joint {i+1}')
-        # Left gripper (7)
-        plt.plot(timesteps, actions[:, 6], label='Left Gripper', linestyle='--', color='black')
-        # Right arm joints (8-13)
-        for i in range(6):
-            plt.plot(timesteps, actions[:, 7+i], label=f'Right Arm Joint {i+1}')
-        # Right gripper (14)
-        plt.plot(timesteps, actions[:, 13], label='Right Gripper', linestyle='--', color='gray')
+    def plot_joint_positions(pred_actions, true_actions, idx):
+        timesteps = np.arange(true_actions.shape[0])
+        fig, axes = plt.subplots(5, 3, figsize=(15, 10))
+        axes = axes.flatten()
         
-        plt.xlabel('Timesteps')
-        plt.ylabel('Joint Positions')
-        plt.legend()
-        plt.title(f'Joint Positions for Sequence {idx}')
-        plt.grid(True)
+        for i in range(14):
+            ax = axes[i]
+            ax.plot(timesteps, pred_actions[:true_actions.shape[0], i], label='Predicted', color='red', linestyle='--')
+            ax.plot(timesteps, true_actions[:, i], label='True', color='blue')
+            ax.set_title(f'Joint {i+1}')
+            ax.set_xlabel('Timesteps')
+            ax.set_ylabel('Position')
+            ax.grid(True)
+            if i == 0:  # Add legend to the first subplot
+                ax.legend()
+        
+        plt.tight_layout()
         plt.savefig(os.path.join(save_dir, f'joint_positions_{idx}.png'))
         plt.close()
 
+    total_loss = 0
+    num_batches = 0
+
     with torch.no_grad():
         for idx, data in enumerate(tqdm(test_dataloader)):
-            images, _, _ = [item.cuda() for item in data]
+            images, true_actions, _ = [item.cuda() for item in data]
             predicted_actions = policy(images)
-
+            
             # Assuming the predicted_actions shape is [batch_size, T, action_dim]
-            for i in range(predicted_actions.shape[0]):
-                actions = predicted_actions[i].cpu().numpy()
-                plot_joint_positions(actions, idx * predicted_actions.shape[0] + i)
+            batch_size = predicted_actions.shape[0]
+            num_batches += batch_size
 
-    print("Testing completed. Results saved in:", save_dir)
+            for i in range(batch_size):
+                pred_actions = post_process(predicted_actions[i].cpu().numpy())
+                true_actions_np = post_process(true_actions[i].cpu().numpy())
+                
+                plot_joint_positions(pred_actions, true_actions_np, idx * batch_size + i)
+                
+                # Compute loss
+                loss = F.mse_loss(torch.tensor(pred_actions[:true_actions_np.shape[0]]), torch.tensor(true_actions_np))
+                total_loss += loss.item()
+                print(f"batch_loss:{loss}")
+
+    avg_loss = total_loss / num_batches
+    print(f"Testing completed. Results saved in: {save_dir}")
+    print(f"Average MSE Loss: {avg_loss:.4f}")
 
     
 
