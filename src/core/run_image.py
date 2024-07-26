@@ -16,14 +16,14 @@ import cv2
 import os
 import torch.nn.functional as F
 from src.model.util import set_seed, detach_dict, compute_dict_mean
-from environment.dataset.new_image_dataset import load_merged_data
+from environment.dataset.sample_image_dataset import load_merged_data
 from src.policy.image_ddpm import DiffusionPolicy
 from src.model.util import is_multi_gpu_checkpoint, memory_monitor
 from src.aloha.aloha_scripts.constants import DT, PUPPET_GRIPPER_JOINT_OPEN
 from src.config.dataset_config import TASK_CONFIGS, DATA_DIR
 from src.aloha.aloha_scripts.real_env import make_real_env  
 from src.aloha.aloha_scripts.robot_utils import move_grippers
-from src.aloha.aloha_scripts.visualize_episodes import save_videos,load_hdf5,STATE_NAMES
+from src.aloha.aloha_scripts.visualize_episodes import save_videos,STATE_NAMES
 
 
 CROP_TOP = False  # for aloha pro, whose top camera is high
@@ -51,7 +51,6 @@ def main(args):
     log_wandb = args["log_wandb"]
     history_len = args["history_len"]
     prediction_offset = args["prediction_offset"]
-    history_skip_frame = args["history_skip_frame"]
     is_test = args["test"]
 
     # Set up wandb
@@ -112,9 +111,6 @@ def main(args):
         max_episode_len = max(max_episode_len, task_config["episode_len"])
         camera_names = task_config["camera_names"]
 
-    max_skill_len = (
-        args["max_skill_len"] if args["max_skill_len"] is not None else max_episode_len
-    )
 
     # fixed parameters
     state_dim = 14
@@ -147,7 +143,6 @@ def main(args):
         "temporal_agg": args["temporal_agg"],
         "camera_names": camera_names,
         "log_wandb": log_wandb,
-        "max_skill_len": max_skill_len,
         }
 
     if is_eval:
@@ -174,8 +169,7 @@ def main(args):
         num_episodes_list,
         camera_names,
         batch_size_train,
-        max_len=max_skill_len,
-        history_skip_frame=history_skip_frame,
+        max_len=history_len+prediction_offset+1,
         history_len=history_len,
         prediction_offset=prediction_offset,
         policy_class=policy_class,
@@ -820,10 +814,8 @@ if __name__ == "__main__":
     parser.add_argument('--log_wandb', action='store_true')
     parser.add_argument('--gpu', action='store', type=int, help='gpu', default=0, required=False)
     parser.add_argument('--multi_gpu', action='store_true')
-    parser.add_argument('--max_skill_len', action='store', type=int, help='max_skill_len', required=False)
     parser.add_argument('--history_len', type=int, default=1)
     parser.add_argument('--prediction_offset', type=int, default=14)
-    parser.add_argument('--history_skip_frame', type=int, default=1)
     parser.add_argument('--test', action='store_true',default=False)
     args = parser.parse_args()
     config = vars(args)
