@@ -196,7 +196,7 @@ class DiffusionPolicy(nn.Module):
                     model_output=noise_pred, timestep=k, sample=noisy_action
                 ).prev_sample
 
-            pred_action = noisy_action[:,:Ta,:]
+            pred_action = noisy_action[:,To-1:Ta+To-1,:]
 
             return noisy_action, pred_action
 
