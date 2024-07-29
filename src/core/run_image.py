@@ -16,7 +16,7 @@ import cv2
 import os
 import torch.nn.functional as F
 from src.model.util import set_seed, detach_dict, compute_dict_mean
-from environment.dataset.sample_image_dataset import load_merged_data
+from environment.dataset.raw_image_dataset import load_merged_data
 from src.policy.image_ddpm import DiffusionPolicy
 from src.model.util import is_multi_gpu_checkpoint, memory_monitor
 from src.aloha.aloha_scripts.constants import DT, PUPPET_GRIPPER_JOINT_OPEN
@@ -616,8 +616,6 @@ def train_ddpm(train_dataloader, val_dataloader, pretest_dataloader, config):
         with torch.no_grad():
             for batch in tqdm(val_dataloader):
                 try:
-                    # image_data, qpos_data, action_data, is_pad = [item.cuda() for item in batch]
-                    # outputs = policy(qpos_data, image_data)
                     forward_dict = forward_pass(batch, policy)
                     loss = forward_dict["loss"]
                     val_loss += loss.item()
@@ -633,13 +631,15 @@ def train_ddpm(train_dataloader, val_dataloader, pretest_dataloader, config):
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            torch.save(policy.state_dict(), 'best_model.pth')
-            print("Model saved!")
+            best_model_path = os.path.join(ckpt_dir, f"best_model_epoch_{epoch}_seed_{seed}.pth")
+            torch.save(policy.state_dict(), best_model_path)
+            print(f"Best model saved at {best_model_path}")
+
 
         if log_wandb:
             wandb.log({"val/loss": avg_val_loss}, step=epoch)
 
-        save_ckpt_every = 100
+        save_ckpt_every = 10
         if epoch % save_ckpt_every == 0 and epoch > 0:
             ckpt_path = os.path.join(ckpt_dir, f"policy_epoch_{epoch}_seed_{seed}.ckpt")
             torch.save(
@@ -655,30 +655,7 @@ def train_ddpm(train_dataloader, val_dataloader, pretest_dataloader, config):
             # Pruning: this removes the checkpoint save_ckpt_every epochs behind the current one
             # except for the ones at multiples of 1000 epochs
             prune_epoch = epoch - save_ckpt_every
-            if prune_epoch % 1000 != 0:
-                prune_path = os.path.join(
-                    ckpt_dir, f"policy_epoch_{prune_epoch}_seed_{seed}.ckpt"
-                )
-                if os.path.exists(prune_path):
-                    os.remove(prune_path)
-
-        save_ckpt_every = 100
-        if epoch % save_ckpt_every == 0 and epoch > 0:
-            ckpt_path = os.path.join(ckpt_dir, f"policy_epoch_{epoch}_seed_{seed}.ckpt")
-            torch.save(
-                {
-                    "model_state_dict": policy.serialize(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "scheduler_state_dict": scheduler.state_dict(),
-                    "epoch": epoch,
-                },
-                ckpt_path,
-            )
-
-            # Pruning: this removes the checkpoint save_ckpt_every epochs behind the current one
-            # except for the ones at multiples of 1000 epochs
-            prune_epoch = epoch - save_ckpt_every
-            if prune_epoch % 1000 != 0:
+            if prune_epoch % 50 != 0:
                 prune_path = os.path.join(
                     ckpt_dir, f"policy_epoch_{prune_epoch}_seed_{seed}.ckpt"
                 )
@@ -727,8 +704,14 @@ def test_ddpm(test_dataloader, config, ckpt_name):
 
     # Load policy
     ckpt_path = os.path.join(ckpt_dir, ckpt_name)
+    pth_path = os.path.join(ckpt_dir, "best_model.pth")
     policy = make_policy(policy_class, policy_config)
-    model_state_dict = torch.load(ckpt_path)["model_state_dict"]
+    if os.path.exists(ckpt_path):
+        model_state_dict = torch.load(ckpt_path)["model_state_dict"]
+    elif os.path.exists(pth_path):
+        model_state_dict = torch.load(pth_path)
+    else:
+        assert False, "No checkpoint found"
     loading_status = policy.deserialize(model_state_dict)
     print(loading_status)
     policy.cuda()
@@ -777,12 +760,13 @@ def test_ddpm(test_dataloader, config, ckpt_name):
             denoised_actions,predicted_actions = policy(images)
             
             # Assuming the predicted_actions shape is [batch_size, T, action_dim]
+            timesteps = predicted_actions.shape[1]
             batch_size = denoised_actions.shape[0]
             num_batches += batch_size
 
             for i in range(batch_size):
                 pred_actions = post_process(predicted_actions[i].cpu().numpy())
-                true_actions_np = post_process(true_actions[i].cpu().numpy())
+                true_actions_np = post_process(true_actions[i][:timesteps].cpu().numpy())
                 
                 plot_joint_positions(pred_actions, true_actions_np, idx * batch_size + i)
                 
