@@ -1,4 +1,5 @@
 import argparse
+import time
 import math
 import wandb
 import torch
@@ -16,7 +17,7 @@ import cv2
 import os
 import torch.nn.functional as F
 from src.model.util import set_seed, detach_dict, compute_dict_mean
-from environment.dataset.sample_image_dataset import load_merged_data
+from environment.dataset.raw_image_dataset import load_merged_data
 from src.policy.image_ddpm import DiffusionPolicy
 from src.model.util import is_multi_gpu_checkpoint, memory_monitor
 # from src.aloha.aloha_scripts.constants import DT, PUPPET_GRIPPER_JOINT_OPEN
@@ -68,7 +69,7 @@ def main(args):
                 resume="allow",
             )
         else:
-            run_name = ckpt_dir.split("/")[-1] + f"sample_image{args['seed']}"
+            run_name = ckpt_dir.split("/")[-1] + f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}"
             wandb_run_id_path = os.path.join(ckpt_dir, "wandb_run_id.txt")
             # check if wandb run exists
             if os.path.exists(wandb_run_id_path):
@@ -633,13 +634,14 @@ def train_ddpm(train_dataloader, val_dataloader, pretest_dataloader, config):
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            torch.save(policy.state_dict(), 'best_model.pth')
-            print("Model saved!")
+            best_model_path = os.path.join(ckpt_dir, f"best_model_epoch_{epoch}_seed_{seed}.pth")
+            torch.save(policy.state_dict(), best_model_path)
+            print(f"Best model saved at {best_model_path}")
 
         if log_wandb:
             wandb.log({"val/loss": avg_val_loss}, step=epoch)
 
-        save_ckpt_every = 100
+        save_ckpt_every = 5
         if epoch % save_ckpt_every == 0 and epoch > 0:
             ckpt_path = os.path.join(ckpt_dir, f"policy_epoch_{epoch}_seed_{seed}.ckpt")
             torch.save(
@@ -655,35 +657,13 @@ def train_ddpm(train_dataloader, val_dataloader, pretest_dataloader, config):
             # Pruning: this removes the checkpoint save_ckpt_every epochs behind the current one
             # except for the ones at multiples of 1000 epochs
             prune_epoch = epoch - save_ckpt_every
-            if prune_epoch % 1000 != 0:
+            if prune_epoch % 50 != 0:
                 prune_path = os.path.join(
                     ckpt_dir, f"policy_epoch_{prune_epoch}_seed_{seed}.ckpt"
                 )
                 if os.path.exists(prune_path):
                     os.remove(prune_path)
 
-        save_ckpt_every = 100
-        if epoch % save_ckpt_every == 0 and epoch > 0:
-            ckpt_path = os.path.join(ckpt_dir, f"policy_epoch_{epoch}_seed_{seed}.ckpt")
-            torch.save(
-                {
-                    "model_state_dict": policy.serialize(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "scheduler_state_dict": scheduler.state_dict(),
-                    "epoch": epoch,
-                },
-                ckpt_path,
-            )
-
-            # Pruning: this removes the checkpoint save_ckpt_every epochs behind the current one
-            # except for the ones at multiples of 1000 epochs
-            prune_epoch = epoch - save_ckpt_every
-            if prune_epoch % 1000 != 0:
-                prune_path = os.path.join(
-                    ckpt_dir, f"policy_epoch_{prune_epoch}_seed_{seed}.ckpt"
-                )
-                if os.path.exists(prune_path):
-                    os.remove(prune_path)
 
     # test
     policy.load_state_dict(torch.load('best_model.pth'))
