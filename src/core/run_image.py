@@ -617,8 +617,6 @@ def train_ddpm(train_dataloader, val_dataloader, pretest_dataloader, config):
         with torch.no_grad():
             for batch in tqdm(val_dataloader):
                 try:
-                    # image_data, qpos_data, action_data, is_pad = [item.cuda() for item in batch]
-                    # outputs = policy(qpos_data, image_data)
                     forward_dict = forward_pass(batch, policy)
                     loss = forward_dict["loss"]
                     val_loss += loss.item()
@@ -664,7 +662,6 @@ def train_ddpm(train_dataloader, val_dataloader, pretest_dataloader, config):
                 if os.path.exists(prune_path):
                     os.remove(prune_path)
 
-
     # test
     policy.load_state_dict(torch.load('best_model.pth'))
     policy.eval()
@@ -707,8 +704,14 @@ def test_ddpm(test_dataloader, config, ckpt_name):
 
     # Load policy
     ckpt_path = os.path.join(ckpt_dir, ckpt_name)
+    pth_path = os.path.join(ckpt_dir, "best_model.pth")
     policy = make_policy(policy_class, policy_config)
-    model_state_dict = torch.load(ckpt_path)["model_state_dict"]
+    if os.path.exists(ckpt_path):
+        model_state_dict = torch.load(ckpt_path)["model_state_dict"]
+    elif os.path.exists(pth_path):
+        model_state_dict = torch.load(pth_path)
+    else:
+        assert False, "No checkpoint found"
     loading_status = policy.deserialize(model_state_dict)
     print(loading_status)
     policy.cuda()
@@ -757,12 +760,13 @@ def test_ddpm(test_dataloader, config, ckpt_name):
             denoised_actions,predicted_actions = policy(images)
             
             # Assuming the predicted_actions shape is [batch_size, T, action_dim]
+            timesteps = predicted_actions.shape[1]
             batch_size = denoised_actions.shape[0]
             num_batches += batch_size
 
             for i in range(batch_size):
                 pred_actions = post_process(predicted_actions[i].cpu().numpy())
-                true_actions_np = post_process(true_actions[i].cpu().numpy())
+                true_actions_np = post_process(true_actions[i][:timesteps].cpu().numpy())
                 
                 plot_joint_positions(pred_actions, true_actions_np, idx * batch_size + i)
                 
