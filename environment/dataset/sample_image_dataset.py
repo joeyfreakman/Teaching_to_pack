@@ -7,13 +7,12 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import torch.utils.data
 import cv2
-from scripts.data_pruning import crop_resize
 from torchvision import transforms
 from torch.utils.data import DataLoader, ConcatDataset
 from src.model.util import DAggerSampler
-from environment.dataset.sampler import SequenceSampler
+from environment.dataset.sampler import SequenceSampler,get_val_mask
 from environment.dataset.replay_buffer import ReplayBuffer
-
+import copy
 
 CROP_TOP = False  # hardcode
 
@@ -26,7 +25,6 @@ class SampleImageDataset(torch.utils.data.Dataset):
         norm_stats,
         history_len: int,
         prediction_offset: int,
-        samples_per_episode: int,
         max_len=None,
         policy_class=None,
     ):
@@ -43,6 +41,8 @@ class SampleImageDataset(torch.utils.data.Dataset):
         self.obs_horizon = history_len + 1
         # create replay buffer
         self.replay_buffer = self._load_replay_buffer()
+        val_mask = get_val_mask(self.replay_buffer.n_episodes,val_ratio=0.1,seed=42)
+        train_mask = ~val_mask
 
         # create sequence sampler
         self.sequence_sampler = SequenceSampler(
@@ -51,8 +51,20 @@ class SampleImageDataset(torch.utils.data.Dataset):
             pad_before=0,
             pad_after=0,
             key_first_k={'images':self.obs_horizon},
+            episode_mask=train_mask,
         )
-        
+    def get_val_dataset(self):
+        val_set = copy.copy(self)
+        val_set.sampler = SequenceSampler(
+            replay_buffer=self.replay_buffer, 
+            sequence_length=self.horizon+self.n_latency_steps,
+            pad_before=self.pad_before, 
+            pad_after=self.pad_after,
+            episode_mask=self.val_mask
+            )
+        val_set.val_mask = ~self.val_mask
+        return val_set
+
     def _load_replay_buffer(self):
     # initialize ReplayBuffer
         root = ReplayBuffer.create_empty_zarr()
@@ -136,9 +148,9 @@ class SampleImageDataset(torch.utils.data.Dataset):
 
         for transform in self.transformations:
             image_data = torch.stack([transform(img) for img in image_data])
-
+        print(f"Transformed image data range: {image_data.min()} to {image_data.max()}")
         image_data = image_data / 255.0
-
+        print(f"Normalized image data range: {image_data.min()} to {image_data.max()}")
         action_data = (
             (action_data - self.norm_stats["action_min"])
             / (self.norm_stats["action_max"] - self.norm_stats["action_min"])
@@ -177,165 +189,7 @@ class SampleImageDataset(torch.utils.data.Dataset):
         return stats
     
 
-### Merge multiple datasets
-def load_merged_data(
-    dataset_dirs,
-    num_episodes_list,
-    camera_names,
-    batch_size_train,
-    max_len=None,
-    dagger_ratio=None,
-    policy_class=None,
-    history_len=1,
-    prediction_offset=14,
-):
-    assert len(dataset_dirs) == len(
-        num_episodes_list
-    ), "Length of dataset_dirs and num_episodes_list must be the same."
-    if dagger_ratio is not None:
-        assert 0 <= dagger_ratio <= 1, "dagger_ratio must be between 0 and 1."
 
-    all_episode_indices = []
-    last_dataset_indices = []
-
-    for i, (dataset_dir, num_episodes) in enumerate(
-        zip(dataset_dirs, num_episodes_list)
-    ):
-        print(f"\nData from: {dataset_dir}\n")
-
-        episode_indices = [(dataset_dir, i) for i in range(num_episodes)]
-
-        if i == len(dataset_dirs) - 1:  # Last dataset
-            last_dataset_indices.extend(episode_indices)
-        all_episode_indices.extend(episode_indices)
-
-    norm_stats = SampleImageDataset.get_norm_stats(dataset_dirs, num_episodes_list)
-
-    train_ratio = 0.8
-    val_ratio = 0.1
-
-    shuffled_indices = np.random.permutation(all_episode_indices)
-    train_split = int(train_ratio * len(all_episode_indices))
-    val_split = int((train_ratio + val_ratio) * len(all_episode_indices))
-    
-    train_indices = shuffled_indices[:train_split]
-    val_indices = shuffled_indices[train_split:val_split]
-    pretest_indices = shuffled_indices[val_split:]
-
-    train_datasets = [
-        SampleImageDataset(
-            [idx for d, idx in train_indices if d == dataset_dir],
-            dataset_dir,
-            camera_names,
-            norm_stats,
-            history_len,
-            prediction_offset,
-            max_len,
-            policy_class=policy_class,
-        )
-        for dataset_dir in dataset_dirs
-    ]
-    val_datasets = [
-        SampleImageDataset(
-            [idx for d, idx in val_indices if d == dataset_dir], 
-            dataset_dir, 
-            camera_names, 
-            norm_stats,
-            history_len,
-            prediction_offset,
-            max_len, 
-            policy_class=policy_class
-        ) 
-        for dataset_dir in dataset_dirs
-    ]
-    
-    pretest_datasets = [
-        SampleImageDataset(
-            [idx for d, idx in pretest_indices if d == dataset_dir],
-            dataset_dir,
-            camera_names,
-            norm_stats,
-            history_len,
-            prediction_offset,
-            max_len,
-            policy_class=policy_class,
-        )
-        for dataset_dir in dataset_dirs
-    ]
-    for dataset in train_datasets + val_datasets + pretest_datasets:
-        if len(dataset) == 0:
-            print(f"Warning: Empty dataset found in {dataset.dataset_dir}")
-
-    test_datasets = train_datasets + val_datasets + pretest_datasets
-    merged_train_dataset = ConcatDataset(train_datasets)
-    merged_val_dataset = ConcatDataset(val_datasets)
-    merged_pretest_dataset = ConcatDataset(pretest_datasets)
-    merged_test_dataset = ConcatDataset(test_datasets)
-
-    if dagger_ratio is not None:
-        dataset_sizes = {
-            dataset_dir: num_episodes
-            for dataset_dir, num_episodes in zip(dataset_dirs, num_episodes_list)
-        }
-        dagger_sampler = DAggerSampler(
-            all_episode_indices,
-            last_dataset_indices,
-            batch_size_train,
-            dagger_ratio,
-            dataset_sizes,
-        )
-        train_dataloader = DataLoader(
-            merged_train_dataset,
-            batch_sampler=dagger_sampler,
-            pin_memory=True,
-            num_workers=4,
-            prefetch_factor=4,
-            persistent_workers=True,
-        )
-        val_dataloader = DataLoader(
-            merged_val_dataset,
-            batch_size=batch_size_train,
-            pin_memory=True,
-            num_workers=2,
-            prefetch_factor=4,
-            persistent_workers=True,
-        )
-    else:
-        train_dataloader = DataLoader(
-            merged_train_dataset,
-            batch_size=batch_size_train,
-            shuffle=True,
-            pin_memory=True,
-            num_workers=4,
-            prefetch_factor=4,
-            persistent_workers=True,
-        )
-        val_dataloader = DataLoader(
-            merged_val_dataset,
-            batch_size=batch_size_train,
-            shuffle=True,
-            pin_memory=True,
-            num_workers=4,
-            prefetch_factor=4,
-            persistent_workers=True,
-        )
-    pretest_dataloader = DataLoader(
-        merged_pretest_dataset,
-        batch_size=batch_size_train,
-        shuffle=False,
-        pin_memory=True,
-        num_workers=2,
-        prefetch_factor=1,
-    )
-    test_dataloader = DataLoader(
-        merged_test_dataset,
-        batch_size=batch_size_train,
-        shuffle=False,
-        pin_memory=True,
-        num_workers=2,
-        prefetch_factor=1,
-    )
-    return train_dataloader, norm_stats, val_dataloader, pretest_dataloader, test_dataloader
 
 
 """
@@ -354,7 +208,7 @@ if __name__ == "__main__":
     camera_names = ["cam_high","cam_left_wrist", "cam_low",  "cam_right_wrist"]
     history_len = 1
     prediction_offset = 14
-    num_episodes = 2  # Just to sample from the first 50 episodes for testing
+    num_episodes = 50  # Just to sample from the first 50 episodes for testing
     norm_stats = SampleImageDataset.get_norm_stats([args.dataset_dir], [num_episodes])
     max_len = history_len + prediction_offset + 1
     obs_len = history_len + 1
