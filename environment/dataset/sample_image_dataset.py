@@ -13,6 +13,8 @@ from src.model.util import DAggerSampler
 from environment.dataset.sampler import SequenceSampler,get_val_mask
 from environment.dataset.replay_buffer import ReplayBuffer
 import copy
+from filelock import FileLock
+import zarr
 
 CROP_TOP = False  # hardcode
 
@@ -27,6 +29,7 @@ class SampleImageDataset(torch.utils.data.Dataset):
         prediction_offset: int,
         max_len=None,
         policy_class=None,
+        use_cache=False,
     ):
         super().__init__()
         self.episode_ids = episode_ids if len(episode_ids) > 0 else [0]
@@ -40,9 +43,38 @@ class SampleImageDataset(torch.utils.data.Dataset):
         self.prediction_offset = prediction_offset
         self.obs_horizon = history_len + 1
         # create replay buffer
-        self.replay_buffer = self._load_replay_buffer()
+        if use_cache:
+            cache_zarr_path = dataset_dir + '.zarr.zip'
+            cache_lock_path = cache_zarr_path + '.lock'
+            print('Acquiring lock on cache.')
+            with FileLock(cache_lock_path):
+                if not os.path.exists(cache_zarr_path):
+                    # cache does not exists
+                    try:
+                        print('Cache does not exist. Creating!')
+                        # store = zarr.DirectoryStore(cache_zarr_path)
+                        replay_buffer = self._load_replay_buffer()
+                        print('Saving cache to disk.')
+                        with zarr.ZipStore(cache_zarr_path) as zip_store:
+                            replay_buffer.save_to_store(
+                                store=zip_store
+                            )
+                    except Exception as e:
+                        os.remove(cache_zarr_path)
+                        raise e
+                else:
+                    print('Loading cached ReplayBuffer from Disk.')
+                    with zarr.ZipStore(cache_zarr_path, mode='r') as zip_store:
+                        replay_buffer = ReplayBuffer.copy_from_store(
+                            src_store=zip_store, store=zarr.MemoryStore())
+                    print('Loaded!')
+            self.replay_buffer = replay_buffer
+        else:
+            self.replay_buffer = self._load_replay_buffer()
+
         val_mask = get_val_mask(self.replay_buffer.n_episodes,val_ratio=0.1,seed=42)
         train_mask = ~val_mask
+        self.val_mask = val_mask
 
         # create sequence sampler
         self.sequence_sampler = SequenceSampler(
@@ -53,13 +85,14 @@ class SampleImageDataset(torch.utils.data.Dataset):
             key_first_k={'images':self.obs_horizon},
             episode_mask=train_mask,
         )
+
     def get_val_dataset(self):
         val_set = copy.copy(self)
         val_set.sampler = SequenceSampler(
             replay_buffer=self.replay_buffer, 
-            sequence_length=self.horizon+self.n_latency_steps,
-            pad_before=self.pad_before, 
-            pad_after=self.pad_after,
+            sequence_length=self.max_len,
+            pad_before=0, 
+            pad_after=0,
             episode_mask=self.val_mask
             )
         val_set.val_mask = ~self.val_mask
@@ -221,6 +254,7 @@ if __name__ == "__main__":
         prediction_offset,
         max_len,
         policy_class="Diffusion",
+        use_cache=True,
     )
     
     idx = np.random.randint(0, len(dataset))
