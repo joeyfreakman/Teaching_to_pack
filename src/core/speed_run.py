@@ -117,8 +117,8 @@ def main(args):
         "camera_names": camera_names,
         "action_dim": 14,
         "observation_horizon": args["history_len"]+1,
-        "action_horizon": 8,  # TODO 
-        "prediction_horizon": args["history_len"]+args["prediction_offset"]+1,
+        "action_horizon": args["prediction_offset"] + 1,  # TODO 
+        "prediction_horizon": args["history_len"]*args["history_skip_frame"]+args["prediction_offset"]+1,
         "num_queries": args["chunk_size"],
         "num_inference_timesteps": 10,
         "multi_gpu": args["multi_gpu"],
@@ -150,7 +150,7 @@ def main(args):
         num_episodes_list,
         camera_names,
         batch_size_train,
-        max_len=history_len+prediction_offset+1,
+        max_len=history_len*history_skip_frame+prediction_offset+1,
         policy_class=policy_class,
         history_skip_frame=history_skip_frame,
         history_len=history_len,
@@ -284,6 +284,7 @@ def train_ddpm(train_dataloader, val_dataloader, pretest_dataloader, config):
 
     policy.cuda()
     best_val_loss = float('inf')
+    last_best_model_path = None
     train_history = []
     for epoch in tqdm(range(start_epoch, num_epochs)):
         print(f"\nEpoch {epoch}")
@@ -342,10 +343,16 @@ def train_ddpm(train_dataloader, val_dataloader, pretest_dataloader, config):
 
         avg_val_loss = val_loss / len(val_dataloader)
         print(f"Epoch {epoch+1}/{num_epochs}, Validation Loss: {avg_val_loss:.4f}")
-
+        
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
+            if last_best_model_path and os.path.exists(last_best_model_path):
+                try:
+                    os.remove(last_best_model_path)
+                except OSError as e:
+                    print(f"Error deleting file {last_best_model_path}: {e}")
             best_model_path = os.path.join(ckpt_dir, f"best_model_epoch_{epoch}_seed_{seed}.pth")
+            last_best_model_path = best_model_path
             torch.save(policy.state_dict(), best_model_path)
             print(f"Best model saved at {best_model_path}")
 
@@ -515,8 +522,8 @@ if __name__ == "__main__":
     parser.add_argument('--gpu', action='store', type=int, help='gpu', default=0, required=False)
     parser.add_argument('--multi_gpu', action='store_true')
     parser.add_argument('--history_len', type=int, default=1)
-    parser.add_argument('--history_skip_frame', type=int, default=8)
-    parser.add_argument('--prediction_offset', type=int, default=14)
+    parser.add_argument('--history_skip_frame', type=int, default=7)
+    parser.add_argument('--prediction_offset', type=int, default=8)
     parser.add_argument('--test', action='store_true',default=False)
     args = parser.parse_args()
     config = vars(args)
