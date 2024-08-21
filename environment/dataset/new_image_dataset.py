@@ -30,7 +30,7 @@ class ImageDataset(torch.utils.data.Dataset):
         self.dataset_dir = dataset_dir
         self.camera_names = camera_names
         self.norm_stats = norm_stats
-        self.max_len = history_len + prediction_offset+1
+        self.max_len = max_len
         self.policy_class = policy_class
         self.transformations = None
         self.history_len = history_len
@@ -65,8 +65,9 @@ class ImageDataset(torch.utils.data.Dataset):
                     images = {cam_name: cv2.imdecode(img, 1) for cam_name, img in images.items()}
                 return np.stack([cv2.cvtColor(img, cv2.COLOR_BGR2RGB) for img in images.values()], axis=0)
 
-            image_sequence = [load_image(t) for t in range(start_ts, curr_ts + 1, self.history_skip_frame)]
-            action_sequence = [root["/action"][t] for t in range(start_ts, target_ts + 1)]
+            image_sequence = [load_image(t) for t in range(start_ts, curr_ts +1, self.history_skip_frame)]
+            action_sequence = root["/action"][start_ts:target_ts+1]
+            
 
             image_data = torch.tensor(np.stack(image_sequence, axis=0), dtype=torch.float32).permute(0, 1, 4, 2, 3) / 255.0
             
@@ -304,7 +305,7 @@ if __name__ == "__main__":
     num_episodes = 50  # Just to sample from the first 50 episodes for testing
     history_skip_frame = 8
     norm_stats = ImageDataset.get_norm_stats([args.dataset_dir], [num_episodes])
-    max_len = history_len + prediction_offset + 1
+    max_len = history_skip_frame*history_len + prediction_offset + 1
     obs_len = history_len + 1
     dataset = ImageDataset(
         list(range(num_episodes)),
@@ -323,7 +324,8 @@ if __name__ == "__main__":
     image_sequence, action_data, is_pad = dataset[idx]
     print(f"image_sequence.shape: {image_sequence.shape}")
     print(f"Sampled episode index: {idx}")
-
+    print(f"action_data.shape: {action_data.shape}")
+    print(f"is_pad.shape: {is_pad.shape}")
     output_dir = os.path.join(dataset.dataset_dir,"plot")
     os.makedirs(output_dir, exist_ok=True)
     
@@ -340,5 +342,5 @@ if __name__ == "__main__":
         plt.savefig(os.path.join(output_dir, f"image_sequence_timestep_{t}.png"))
         print(f"Saved image_sequence_timestep_{t}.png")
         plt.close()
-t1 = time.time()
-print(f"Time taken: {t1-t0} seconds")
+    t1 = time.time()
+    print(f"Time taken: {t1-t0:.2f} seconds")
