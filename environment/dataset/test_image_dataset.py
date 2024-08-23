@@ -7,23 +7,26 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import torch.utils.data
 import cv2
-from scripts.data_pruning import crop_resize
 from torchvision import transforms
 from torch.utils.data import DataLoader, ConcatDataset
 from src.model.util import DAggerSampler
 
 CROP_TOP = False  # hardcode
 
-class TestDataset(torch.utils.data.Dataset):
+import numpy as np
+import torch
+import os
+import h5py
+import cv2
+from torch.utils.data import Dataset
+
+class TestDataset(Dataset):
     def __init__(
         self,
         episode_ids,
         dataset_dir,
         camera_names,
         norm_stats,
-        history_skip_frame: int,
-        history_len: int,
-        prediction_offset: int,
         max_len=None,
         policy_class=None,
     ):
@@ -32,98 +35,76 @@ class TestDataset(torch.utils.data.Dataset):
         self.dataset_dir = dataset_dir
         self.camera_names = camera_names
         self.norm_stats = norm_stats
-        self.max_len = history_len + prediction_offset + 1
+        self.max_len = max_len
         self.policy_class = policy_class
         self.transformations = None
-        self.history_len = history_len
-        self.prediction_offset = prediction_offset
-        self.history_skip_frame = history_skip_frame
+        self.episode_lengths = self._get_episode_lengths()
+        self.cumulative_lengths = np.cumsum([0] + self.episode_lengths)
+
+    def _get_episode_lengths(self):
+        lengths = []
+        for episode_id in self.episode_ids:
+            dataset_path = os.path.join(self.dataset_dir, f"episode_{episode_id}.hdf5")
+            with h5py.File(dataset_path, "r") as root:
+                lengths.append(root["/action"].shape[0])
+        return lengths
 
     def __len__(self):
-        return len(self.episode_ids)
+        return self.cumulative_lengths[-1]
 
     def __getitem__(self, index):
-        if not isinstance(index, (int, np.integer)):
-            raise TypeError(f"Index must be an integer, got {type(index)}")
-        index = int(index)
-        if index < 0 or index >= len(self.episode_ids):
-            raise IndexError(f"Index {index} out of range for dataset of size {len(self.episode_ids)}")
-
-        episode_id = self.episode_ids[index]
+        episode_index = np.searchsorted(self.cumulative_lengths, index, side='right') - 1
+        episode_id = self.episode_ids[episode_index]
+        timestep = index - self.cumulative_lengths[episode_index]
+        
         dataset_path = os.path.join(self.dataset_dir, f"episode_{episode_id}.hdf5")
-
+        
         with h5py.File(dataset_path, "r") as root:
             compressed = root.attrs.get("compress", False)
-            total_timesteps = root["/action"].shape[0]
-            
-            image_sequence = []
-            action_sequence = []
+            end_ts = min(timestep + self.max_len, root["/action"].shape[0]) if self.max_len else root["/action"].shape[0]
 
-            # Get images and actions for the entire episode
-            for t in range(total_timesteps):
-                image_dict = {cam_name: root[f"/observations/images/{cam_name}"][t] for cam_name in self.camera_names}
-                if compressed:
-                    for cam_name in image_dict.keys():
-                        decompressed_image = cv2.imdecode(image_dict[cam_name], 1)
-                        image_dict[cam_name] = np.array(decompressed_image)
-                        if CROP_TOP and cam_name == "cam_high":
-                            image_dict[cam_name] = crop_resize(image_dict[cam_name])
-                for cam_name in image_dict.keys():
-                    image_dict[cam_name] = cv2.cvtColor(image_dict[cam_name], cv2.COLOR_BGR2RGB)
-                all_cam_images = [image_dict[cam_name] for cam_name in self.camera_names]
-                all_cam_images = np.stack(all_cam_images, axis=0)
-                image_sequence.append(all_cam_images)
-                action_sequence.append(root["/action"][t])
-            
-            image_sequence = np.stack(image_sequence, axis=0)
-            image_data = torch.from_numpy(image_sequence)
-            image_data = torch.einsum("t k h w c -> t k c h w", image_data)
+            # Load and process images
+            image_dict = {cam: root[f"/observations/images/{cam}"][timestep] for cam in self.camera_names}
+            if compressed:
+                for cam in image_dict:
+                    image = cv2.imdecode(image_dict[cam], 1)
+                    image_dict[cam] = np.array(image)
 
-            action_sequence = np.stack(action_sequence, axis=0)
-            action_data = torch.from_numpy(action_sequence).float()
-            action_len = len(action_sequence)
-            if action_len > self.max_len:
-                action_sequence = action_sequence[:self.max_len]
-                action_len = self.max_len
+            # Convert images to RGB and stack them
+            all_cam_images = np.stack([cv2.cvtColor(image_dict[cam], cv2.COLOR_BGR2RGB) for cam in self.camera_names])
+            image_data = torch.einsum("k h w c -> k c h w", torch.from_numpy(all_cam_images / 255.0))
 
-            padded_action = np.zeros((self.max_len,) + action_sequence.shape[1:], dtype=np.float32)
-            padded_action[:action_len] = action_sequence
-            action_data = torch.from_numpy(padded_action).float()
+            # Process actions and padding
+            action = root["/action"][timestep:end_ts]
+            padded_action = np.zeros((self.max_len,) + action.shape[1:], dtype=np.float32)
+            padded_action[:len(action)] = action
+            is_pad = torch.from_numpy(np.pad(np.ones(len(action)), (0, self.max_len - len(action)), 'constant')).bool()
 
-            is_pad = torch.zeros(self.max_len, dtype=torch.bool)
-            is_pad[action_len:] = True
+            if self.policy_class == "Diffusion":
+                action_data = 2 * (torch.from_numpy(padded_action) - self.norm_stats["action_min"]) / \
+                              (self.norm_stats["action_max"] - self.norm_stats["action_min"]) - 1
+            else:
+                action_data = (torch.from_numpy(padded_action) - self.norm_stats["action_mean"]) / self.norm_stats["action_std"]
 
+            # Initialize transformations if needed
             if self.transformations is None:
-                original_size = image_data.shape[3:]
-                ratio = 0.95
-                self.transformations = [
-                    transforms.RandomCrop(
-                        size=[
-                            int(original_size[0] * ratio),
-                            int(original_size[1] * ratio),
-                        ]
-                    ),
-                    transforms.Resize(original_size, antialias=True),
-                ]
-                if self.policy_class == "Diffusion":
-                    self.transformations.extend(
-                        [
-                            transforms.RandomRotation(degrees=[-5.0, 5.0], expand=False),
-                            transforms.ColorJitter(brightness=0.3, contrast=0.4, saturation=0.5),
-                        ]
-                    )
+                self.initialize_transformations(image_data.shape[2:])
 
             for transform in self.transformations:
-                image_data = torch.stack([transform(img) for img in image_data])
+                image_data = transform(image_data).float()
 
-            image_data = image_data / 255.0
-
-            action_data = (
-                (action_data - self.norm_stats["action_min"])
-                / (self.norm_stats["action_max"] - self.norm_stats["action_min"])
-            ) * 2 - 1
-            
             return image_data, action_data, is_pad
+    def initialize_transformations(self, original_size):
+        ratio = 0.95
+        self.transformations = [
+            transforms.RandomCrop([int(original_size[0] * ratio), int(original_size[1] * ratio)]),
+            transforms.Resize(original_size, antialias=True)
+        ]
+        if self.policy_class == "Diffusion":
+            self.transformations.extend([
+                transforms.RandomRotation(degrees=[-5.0, 5.0], expand=False),
+                transforms.ColorJitter(brightness=0.3, contrast=0.4, saturation=0.5)
+            ])
         
     @staticmethod
     def get_norm_stats(dataset_dirs, num_episodes_list):
@@ -164,9 +145,6 @@ def load_merged_data(
     max_len=None,
     dagger_ratio=0.9,
     policy_class=None,
-    history_skip_frame=1,
-    history_len=2,
-    prediction_offset=5,
 ):
     assert len(dataset_dirs) == len(
         num_episodes_list
@@ -207,9 +185,6 @@ def load_merged_data(
             dataset_dir,
             camera_names,
             norm_stats,
-            history_skip_frame,
-            history_len,
-            prediction_offset,
             max_len,
             policy_class=policy_class,
         )
@@ -221,9 +196,6 @@ def load_merged_data(
             dataset_dir, 
             camera_names, 
             norm_stats,
-            history_skip_frame,
-            history_len,
-            prediction_offset,
             max_len, 
             policy_class=policy_class
         ) 
@@ -236,9 +208,6 @@ def load_merged_data(
             dataset_dir,
             camera_names,
             norm_stats,
-            history_skip_frame,
-            history_len,
-            prediction_offset,
             max_len,
             policy_class=policy_class,
         )
@@ -314,7 +283,7 @@ def load_merged_data(
         batch_size=1,  # Set batch size to 1 to return one episode at a time
         shuffle=False,
         pin_memory=True,
-        num_workers=2,
-        prefetch_factor=1,
+        num_workers=20,
+        prefetch_factor=8,
     )
     return train_dataloader, norm_stats, val_dataloader, pretest_dataloader, test_dataloader
