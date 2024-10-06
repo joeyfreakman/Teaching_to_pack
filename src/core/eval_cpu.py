@@ -1,4 +1,32 @@
-
+from omegaconf import DictConfig
+import argparse
+import math
+import wandb
+import torch
+import numpy as np
+import threading
+from tqdm import tqdm
+from torchvision import transforms
+from einops import rearrange
+import matplotlib.pyplot as plt
+from scripts.data_pruning import crop_resize
+import pickle
+from torch.optim.lr_scheduler import LambdaLR
+import signal
+import cv2
+import os
+import hydra
+from src.model.util import set_seed, detach_dict, compute_dict_mean
+from src.model.enc_dataset import load_merged_data
+from src.policy.ddpm import DiffusionPolicy
+from src.model.util import is_multi_gpu_checkpoint, memory_monitor, memory_monitor
+from src.aloha.aloha_scripts.constants import DT, PUPPET_GRIPPER_JOINT_OPEN
+from src.config.dataset_config import TASK_CONFIGS, DATA_DIR
+from src.aloha.aloha_scripts.real_env import make_real_env  
+from src.aloha.aloha_scripts.robot_utils import move_grippers
+from src.aloha.aloha_scripts.visualize_episodes import save_videos
+CROP_TOP = True  # for aloha pro, whose top camera is high
+CKPT = 0  # 0 for policy_last, otherwise put the ckpt number here
 
 def signal_handler(sig, frame):
     exit()
@@ -116,27 +144,6 @@ def main(args):
             print(f"{ckpt_name}: {success_rate=} {avg_return=}")
         print()
         exit()
-
-    train_dataloader, stats, _ = load_merged_data(
-        dataset_dirs,
-        num_episodes_list,
-        camera_names,
-        batch_size_train,
-        history_len=history_len,
-        prediction_offset=prediction_offset,
-        history_skip_frame=history_skip_frame,
-        max_len=max_skill_len,
-        policy_class=policy_class,
-    )
-
-    # save dataset stats
-    if not os.path.isdir(ckpt_dir):
-        os.makedirs(ckpt_dir)
-    stats_path = os.path.join(ckpt_dir, f"dataset_stats.pkl")
-    with open(stats_path, "wb") as f:
-        pickle.dump(stats, f)
-
-    train_ddpm(train_dataloader, config)
 
 
 def make_policy(policy_class, policy_config):
@@ -456,128 +463,6 @@ def forward_pass(data, policy):
     image_data, qpos_data, action_data, is_pad = data
     return policy(qpos_data, image_data, action_data, is_pad)
 
-
-def train_ddpm(train_dataloader, config):
-    num_epochs = config["num_epochs"]
-    ckpt_dir = config["ckpt_dir"]
-    seed = config["seed"]
-    policy_class = config["policy_class"]
-    policy_config = config["policy_config"]
-    log_wandb = config["log_wandb"]
-    multi_gpu = config["policy_config"]["multi_gpu"]
-
-    set_seed(seed)
-
-    policy = make_policy(policy_class, policy_config)
-    optimizer = make_optimizer(policy_class, policy)
-    scheduler = make_scheduler(optimizer, num_epochs)
-
-    # if ckpt_dir is not empty, prompt the user to load the checkpoint
-    if os.path.isdir(ckpt_dir) and len(os.listdir(ckpt_dir)) > 2:
-        print(f"Checkpoint directory {ckpt_dir} is not empty. Load checkpoint? (y/n)")
-        load_ckpt = input()
-        if load_ckpt == "y":
-            # load the latest checkpoint
-            latest_idx = max(
-                [
-                    int(f.split("_")[2])
-                    for f in os.listdir(ckpt_dir)
-                    if f.startswith("policy_epoch_")
-                ]
-            )
-            ckpt_path = os.path.join(
-                ckpt_dir, f"policy_epoch_{latest_idx}_seed_{seed}.ckpt"
-            )
-            print(f"Loading checkpoint from {ckpt_path}")
-            checkpoint = torch.load(ckpt_path, map_location=torch.device('cpu'))
-            model_state_dict = checkpoint["model_state_dict"]
-            # The model was trained on a single gpu, now load onto multiple gpus
-            if multi_gpu and not is_multi_gpu_checkpoint(model_state_dict):
-                # Add "module." prefix only to the keys associated with policy.model
-                model_state_dict = {
-                    k if "model" not in k else f"model.module.{k.split('.', 1)[1]}": v
-                    for k, v in model_state_dict.items()
-                }
-            # The model was trained on multiple gpus, now load onto a single gpu
-            elif not multi_gpu and is_multi_gpu_checkpoint(model_state_dict):
-                # Remove "module." prefix only to the keys associated with policy.model
-                model_state_dict = {
-                    k.replace("module.", "", 1): v for k, v in model_state_dict.items()
-                }
-            loading_status = policy.deserialize(model_state_dict)
-            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-            start_epoch = checkpoint["epoch"] + 1
-            print(loading_status)
-        else:
-            print("Not loading checkpoint")
-            start_epoch = 0
-    else:
-        start_epoch = 0
-
-    train_history = []
-    for epoch in tqdm(range(start_epoch, num_epochs)):
-        print(f"\nEpoch {epoch}")
-        # training
-        policy.train()
-        optimizer.zero_grad()
-        for batch_idx, data in enumerate(train_dataloader):
-            forward_dict = forward_pass(data, policy)
-            # backward
-            loss = forward_dict["loss"]
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
-            train_history.append(detach_dict(forward_dict))
-        scheduler.step()
-        e = epoch - start_epoch
-        epoch_summary = compute_dict_mean(
-            train_history[(batch_idx + 1) * e : (batch_idx + 1) * (e + 1)]
-        )
-        epoch_train_loss = epoch_summary["loss"]
-        print(f"Train loss: {epoch_train_loss:.5f}")
-        epoch_summary["lr"] = np.array(scheduler.get_last_lr()[0])
-        summary_string = ""
-        for k, v in epoch_summary.items():
-            summary_string += f"{k}: {v.item():.5f} "
-        print(summary_string)
-        if log_wandb:
-            epoch_summary_train = {f"train/{k}": v for k, v in epoch_summary.items()}
-            wandb.log(epoch_summary_train, step=epoch)
-
-        save_ckpt_every = 100
-        if epoch % save_ckpt_every == 0 and epoch > 0:
-            ckpt_path = os.path.join(ckpt_dir, f"policy_epoch_{epoch}_seed_{seed}.ckpt")
-            torch.save(
-                {
-                    "model_state_dict": policy.serialize(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "scheduler_state_dict": scheduler.state_dict(),
-                    "epoch": epoch,
-                },
-                ckpt_path,
-            )
-
-            # Pruning: this removes the checkpoint save_ckpt_every epochs behind the current one
-            # except for the ones at multiples of 1000 epochs
-            prune_epoch = epoch - save_ckpt_every
-            if prune_epoch % 1000 != 0:
-                prune_path = os.path.join(
-                    ckpt_dir, f"policy_epoch_{prune_epoch}_seed_{seed}.ckpt"
-                )
-                if os.path.exists(prune_path):
-                    os.remove(prune_path)
-
-    ckpt_path = os.path.join(ckpt_dir, f"policy_last.ckpt")
-    torch.save(
-        {
-            "model_state_dict": policy.serialize(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "scheduler_state_dict": scheduler.state_dict(),
-            "epoch": epoch,
-        },
-        ckpt_path,
-    )
 
 
 if __name__ == "__main__":

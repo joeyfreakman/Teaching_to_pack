@@ -14,10 +14,11 @@ import pickle
 from torch.optim.lr_scheduler import LambdaLR
 import signal
 import cv2
+import time
 import os
 import torch.nn.functional as F
 from src.model.util import set_seed, detach_dict, compute_dict_mean
-from environment.dataset.raw_image_dataset import load_merged_data
+from environment.dataset.chunk_image_dataset import load_merged_data
 from src.policy.image_ddpm import DiffusionPolicy
 from src.model.util import is_multi_gpu_checkpoint, memory_monitor
 # from src.aloha.aloha_scripts.constants import DT, PUPPET_GRIPPER_JOINT_OPEN
@@ -60,7 +61,7 @@ def main(args):
             # run_name += ".eval"
             log_wandb = False
         elif is_test:
-            run_name = ckpt_dir.split("/")[-1] + f"seed.{args['seed']}.test"
+            run_name = ckpt_dir.split("/")[-1] + f"localseed.{args['seed']}.{time.time()}.test"
             wandb.init(
                 project="task1",
                 entity="joeywang-of",
@@ -176,7 +177,7 @@ def main(args):
         prediction_offset=prediction_offset,
     )
     if is_test:
-        test_ddpm(test_dataloader, config, "policy_last.ckpt")
+        test_ddpm(test_dataloader, config, "policy_epoch_35_seed_42.ckpt")
         exit()
 
     # save dataset stats
@@ -186,7 +187,7 @@ def main(args):
     with open(stats_path, "wb") as f:
         pickle.dump(stats, f)
 
-    train_ddpm(train_dataloader,val_dataloader,pretest_dataloader, config)
+    train_ddpm(test_dataloader,val_dataloader,pretest_dataloader, config)
 
 
 def make_policy(policy_class, policy_config):
@@ -743,6 +744,7 @@ def test_ddpm(test_dataloader, config, ckpt_name):
             ax.set_title(f'Joint {i}: {all_names[i]}')
             ax.set_xlabel('Timesteps')
             ax.set_ylabel('Position')
+            ax.set_ylim(-1.5, 1.5)
             ax.grid(True)
             if i == 0:  # Add legend to the first subplot
                 ax.legend()

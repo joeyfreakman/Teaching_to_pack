@@ -73,6 +73,7 @@ class DiffusionPolicy(nn.Module):
                         "backbones": self.backbones,
                         "pools": self.pools,
                         "linears": self.linears,
+                        "multihead_attn": self.multihead_attn,
                         "noise_pred_net": self.noise_pred_net,
                     }
                 )
@@ -125,7 +126,7 @@ class DiffusionPolicy(nn.Module):
                 
                 # Use multi-head attention to each timestep
                 t_features = torch.stack(t_features, dim=1)
-                attn_output, _ = self.multihead_attn(t_features, t_features, t_features)
+                attn_output, _ = nets["policy"]["multihead_attn"](t_features, t_features, t_features)
                 attn_output = attn_output.mean(dim=1)
                 all_features.append(attn_output)
             
@@ -174,7 +175,7 @@ class DiffusionPolicy(nn.Module):
                     t_features.append(out_features)
                 
                 t_features = torch.stack(t_features, dim=1)
-                attn_output, _ = self.multihead_attn(t_features, t_features, t_features)
+                attn_output, _ = nets["policy"]["multihead_attn"](t_features, t_features, t_features)
                 attn_output = attn_output.mean(dim=1)
                 all_features.append(attn_output)
             

@@ -2,14 +2,18 @@ import numpy as np
 import torch
 import os
 import h5py
+import argparse
+from tqdm import tqdm
+import matplotlib.pyplot as plt
 import torch.utils.data
 import cv2
 from scripts.data_pruning import crop_resize
 from torchvision import transforms
 from torch.utils.data import DataLoader, ConcatDataset
 from src.model.util import DAggerSampler
-CROP_TOP = True  # hardcode
-FILTER_MISTAKES = True  # Filter out mistakes from the dataset
+import time
+CROP_TOP = False  # hardcode
+
 
 """
     For each timestep:
@@ -46,7 +50,7 @@ class EncoderDataset(torch.utils.data.Dataset):
         self.camera_names = camera_names
         self.norm_stats = norm_stats
         self.is_sim = None
-        self.max_len = max_len
+        self.max_len = history_len + prediction_offset+1
         self.policy_class = policy_class
         self.transformations = None
         self.history_len = history_len
@@ -71,7 +75,6 @@ class EncoderDataset(torch.utils.data.Dataset):
 
 
     def __getitem__(self, index):
-        max_len = self.max_len
         if not isinstance(index, (int, np.integer)):
             raise TypeError(f"Index must be an integer, got {type(index)}")
         index = int(index)
@@ -117,8 +120,8 @@ class EncoderDataset(torch.utils.data.Dataset):
                 all_cam_images = [image_dict[cam_name] for cam_name in self.camera_names]
                 all_cam_images = np.stack(all_cam_images, axis=0)
                 image_sequence.append(all_cam_images)
-            image_sequence = np.array(image_sequence)
-            image_data = torch.tensor(image_sequence, dtype=torch.float32)
+            image_sequence = np.stack(image_sequence, axis=0)
+            image_data = torch.from_numpy(image_sequence)
             image_data = torch.einsum("t k h w c -> t k c h w", image_data)
 
             qpos_sequence = root["/observations/qpos"][start_ts:curr_ts+1:self.history_skip_frame]
@@ -131,15 +134,15 @@ class EncoderDataset(torch.utils.data.Dataset):
         
             action_len = len(action_sequence)
             # print(f"action_len: {action_len}")
-            if action_len > max_len:
-                action_sequence = action_sequence[:max_len]
-                action_len = max_len
+            if action_len > self.max_len:
+                action_sequence = action_sequence[:self.max_len]
+                action_len = self.max_len
 
-            padded_action = np.zeros((max_len,) + action_sequence.shape[1:], dtype=np.float32)
+            padded_action = np.zeros((self.max_len,) + action_sequence.shape[1:], dtype=np.float32)
             padded_action[:action_len] = action_sequence
             action_data = torch.from_numpy(padded_action).float()
 
-            is_pad = torch.zeros(max_len, dtype=torch.bool)
+            is_pad = torch.zeros(self.max_len, dtype=torch.bool)
             is_pad[action_len:] = True
 
             if self.transformations is None:
@@ -185,8 +188,6 @@ class EncoderDataset(torch.utils.data.Dataset):
                 / (self.norm_stats["action_max"] - self.norm_stats["action_min"])
             ) * 2 - 1
 
-            # print(f"image_data: {image_data.shape}, qpos_data: {qpos_data.shape}, action_data: {action_data.shape}, is_pad: {is_pad.shape}")
-            # print(f"Index {index}")
             return image_data, qpos_data, action_data, is_pad
 
 def get_norm_stats(dataset_dirs, num_episodes_list):
@@ -396,3 +397,68 @@ def load_merged_data(
         
     )
     return train_dataloader, norm_stats, train_datasets[-1].is_sim, val_dataloader, test_dataloader
+
+
+"""
+Test the Dataset class.
+
+Example usage:
+$ python enc_dataset.py --dataset_dir /mnt/d/kit/ALR/dataset/ttp_compressed/
+"""
+if __name__ == "__main__":
+
+    t0 = time.time()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--dataset_dir", type=str, required=True, help="Path to the dataset directory"
+    )
+    args = parser.parse_args()
+
+    # Parameters for the test
+    camera_names = ["cam_high", "cam_low", "cam_left_wrist", "cam_right_wrist"]
+    history_len = 1
+    prediction_offset = 14
+    num_episodes = 50  # Just to sample from the first 50 episodes for testing
+    history_skip_frame = 8
+    norm_stats = get_norm_stats([args.dataset_dir], [num_episodes])
+    # Create a Dataset instance
+    dataset = EncoderDataset(
+        list(range(num_episodes)),
+        args.dataset_dir,
+        camera_names,
+        norm_stats,
+        history_len,
+        prediction_offset,
+        history_skip_frame,
+        max_len=100,
+        policy_class="Diffusion",
+    )
+
+    # Sample a random item from the dataset
+    idx = np.random.randint(0, len(dataset))
+    image_sequence,_,_,_ = dataset[idx]
+
+    print(f"Sampled episode index: {idx}")
+    print(f"Image sequence shape: {image_sequence.shape}")
+
+    # Save the images in the sequence
+
+    output_dir = os.path.join(dataset.dataset_dir,"plot")
+    os.makedirs(output_dir, exist_ok=True)
+    
+    for t in tqdm(range(history_len)):
+        plt.figure(figsize=(10, 5))
+        for cam_idx, cam_name in enumerate(camera_names):
+            plt.subplot(1, len(camera_names), cam_idx + 1)
+            # Convert BGR to RGB
+            img_rgb = cv2.cvtColor(
+                image_sequence[t, cam_idx].permute(1, 2, 0).numpy(), cv2.COLOR_BGR2RGB
+            )
+            plt.imshow(img_rgb)
+            plt.title(f"{cam_name} at timestep {t}")
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f"image_sequence_timestep_{t}.png"))
+        print(f"Saved image_sequence_timestep_{t}.png")
+        plt.close()  # Close the figure to free memory
+    t1 = time.time()
+    print(f"Time taken: {t1-t0:.2f} seconds")

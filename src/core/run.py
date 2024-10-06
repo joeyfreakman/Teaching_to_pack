@@ -18,7 +18,7 @@ import torch.nn.functional as F
 from src.model.util import set_seed, detach_dict, compute_dict_mean
 from src.model.enc_dataset import load_merged_data
 from src.policy.ddpm import DiffusionPolicy
-from src.model.util import is_multi_gpu_checkpoint, memory_monitor, memory_monitor
+from src.model.util import is_multi_gpu_checkpoint, memory_monitor
 from src.aloha.aloha_scripts.constants import DT, PUPPET_GRIPPER_JOINT_OPEN
 from src.config.dataset_config import TASK_CONFIGS, DATA_DIR
 from src.aloha.aloha_scripts.real_env import make_real_env  
@@ -26,7 +26,7 @@ from src.aloha.aloha_scripts.robot_utils import move_grippers
 from src.aloha.aloha_scripts.visualize_episodes import save_videos
 
 
-CROP_TOP = True  # for aloha pro, whose top camera is high
+CROP_TOP = False  # for aloha pro, whose top camera is high
 CKPT = 0  # 0 for policy_last, otherwise put the ckpt number here
 
 def signal_handler(sig,frame):
@@ -52,6 +52,7 @@ def main(args):
     history_len = args["history_len"]
     prediction_offset = args["prediction_offset"]
     history_skip_frame = args["history_skip_frame"]
+    is_test = args["test"]
 
     # Set up wandb
     if log_wandb:
@@ -155,6 +156,8 @@ def main(args):
             print(f"{ckpt_name}: {success_rate=} {avg_return=}")
         print()
         exit()
+
+
     
     train_dataloader, stats, _,val_dataloader,test_dataloader = load_merged_data(
         dataset_dirs,
@@ -167,7 +170,9 @@ def main(args):
         history_skip_frame=history_skip_frame,
         policy_class=policy_class,
     )
-
+    if is_test:
+        test_ddpm(test_dataloader, config, "policy_last.ckpt")
+        exit()
 
     # save dataset stats
     if not os.path.isdir(ckpt_dir):
@@ -223,7 +228,7 @@ def make_scheduler(optimizer, num_steps):
     return scheduler
 
 
-def get_image(ts, camera_names, crop_top=True, save_dir=None, t=None):
+def get_image(ts, camera_names, crop_top=CROP_TOP, save_dir=None, t=None):
     curr_images = []
     for cam_name in camera_names:
         curr_image = ts.observation["images"][cam_name]
@@ -307,14 +312,12 @@ def eval_ddpm(config:dict, ckpt_name, save_episode=True, dataset_dirs=None):
         stats = pickle.load(f)
 
     pre_process = lambda s_qpos: (s_qpos - stats["qpos_mean"]) / stats["qpos_std"]
-    if policy_class == "Diffusion":
-        post_process = (
+    
+    post_process = (
             lambda a: ((a + 1) / 2) * (stats["action_max"] - stats["action_min"])
             + stats["action_min"]
         )
-    else:
-        post_process = lambda a: a * stats["action_std"] + stats["action_mean"]
-
+ 
     env = make_real_env(init_node=True)
     env_max_reward = 0
 
@@ -501,10 +504,6 @@ def forward_pass(data, policy):
         action_data.cuda(),
         is_pad.cuda(),
     )
-    # print(f"image_data shape before policy call: {image_data.shape}")
-    # Ensure qpos_data and image_data have the correct dimensions
-    # qpos_data = qpos_data.view(qpos_data.size(0), -1)  # Flatten qpos_data if necessary
-    # image_data = image_data.view(image_data.size(0), -1)  # Flatten image_data if necessary
     return policy(qpos_data, image_data, action_data, is_pad)
 
 
@@ -718,6 +717,104 @@ def train_ddpm(train_dataloader, val_dataloader, test_dataloader, config):
         },
         ckpt_path,
     )
+
+def draw_trajectory(image, action):
+    """
+    Plot the trajectory of action on the image
+    """
+    img = image.cpu().numpy().transpose(1, 2, 0)
+    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    
+    # Plot action trajectory
+    for i in range(1, len(action)):
+        start_point = (int(action[i-1][0]), int(action[i-1][1]))
+        end_point = (int(action[i][0]), int(action[i][1]))
+        cv2.line(img, start_point, end_point, (0, 255, 0), 2)  # Green line for action trajectory
+    
+    # Plot start and end points
+    cv2.circle(img, (int(action[0][0]), int(action[0][1])), 5, (0, 0, 255), -1)  # Red for start
+    cv2.circle(img, (int(action[-1][0]), int(action[-1][1])), 5, (255, 0, 0), -1)  # Blue for end
+    
+    return img
+
+def save_denoising_process(image, actions, save_path):
+    """
+    Save denoising process
+    """
+    for step, action in enumerate(actions):
+        img = draw_trajectory(image, action)
+        cv2.imwrite(f'{save_path}_step_{step}.png', img * 255)
+
+def test_ddpm(test_dataloader, config, ckpt_name):
+    ckpt_dir = config["ckpt_dir"]
+    policy_class = config["policy_class"]
+    policy_config = config["policy_config"]
+
+    # Load policy
+    ckpt_path = os.path.join(ckpt_dir, ckpt_name)
+    policy = make_policy(policy_class, policy_config)
+    model_state_dict = torch.load(ckpt_path)["model_state_dict"]
+    loading_status = policy.deserialize(model_state_dict)
+    print(loading_status)
+    policy.cuda()
+    policy.eval()
+
+    # Create save directory
+    save_dir = os.path.join(ckpt_dir, "test_results")
+    os.makedirs(save_dir, exist_ok=True)
+
+    with torch.no_grad():
+        for batch_idx, data in enumerate(tqdm(test_dataloader)):
+            image_data, qpos_data, _, _ = [item.cuda() for item in data]
+            
+            B, T, K, C, H, W = image_data.shape
+            
+            # Use only the last frame for prediction
+            curr_image = image_data[:, -1]
+            curr_qpos = qpos_data[:, -1]
+
+            # Prepare observation condition
+            obs_cond = torch.cat([curr_image.reshape(B, -1), curr_qpos], dim=1)
+            
+            # Ensure obs_cond matches the expected dimension
+            if obs_cond.shape[1] < policy.noise_pred_net.global_cond_dim:
+                repeat_factor = policy.noise_pred_net.global_cond_dim // obs_cond.shape[1] + 1
+                obs_cond = obs_cond.repeat(1, repeat_factor)
+            obs_cond = obs_cond[:, :policy.noise_pred_net.global_cond_dim]
+
+            # Initialize noisy action
+            noisy_action = torch.randn((B, policy.prediction_horizon, policy.ac_dim), device=curr_image.device)
+            
+            # Set up noise scheduler
+            policy.noise_scheduler.set_timesteps(policy.num_inference_timesteps)
+            
+            all_actions = []
+
+            # Denoising loop
+            for k in policy.noise_scheduler.timesteps:
+                noise_pred = policy.nets["policy"]["noise_pred_net"](
+                    sample=noisy_action, timestep=k, global_cond=obs_cond
+                )
+                noisy_action = policy.noise_scheduler.step(
+                    model_output=noise_pred, timestep=k, sample=noisy_action
+                ).prev_sample
+                
+                all_actions.append(noisy_action.clone())
+
+            # Post-process actions
+            post_process = lambda a: ((a + 1) / 2) * (policy.norm_stats["action_max"] - policy.norm_stats["action_min"]) + policy.norm_stats["action_min"]
+            all_actions = [post_process(a) for a in all_actions]
+
+            # Save trajectories for each item in the batch
+            for b in range(B):
+                save_path = os.path.join(save_dir, f"batch_{batch_idx}_item_{b}")
+                save_denoising_process(curr_image[b], [a[b] for a in all_actions], save_path)
+
+            if batch_idx >= 9:  # Process only 10 batches
+                break
+
+    print("Testing completed. Results saved in:", save_dir)
+
     
 
 if __name__ == "__main__":
@@ -740,8 +837,8 @@ if __name__ == "__main__":
     parser.add_argument('--max_skill_len', action='store', type=int, help='max_skill_len', required=False)
     parser.add_argument('--history_len', type=int, default=3)
     parser.add_argument('--prediction_offset', type=int, default=10)
-    parser.add_argument('--history_skip_frame', type=int, default=20)
-
+    parser.add_argument('--history_skip_frame', type=int, default=10)
+    parser.add_argument('--test', action='store_true',default=False)
     args = parser.parse_args()
     config = vars(args)
     main(config)

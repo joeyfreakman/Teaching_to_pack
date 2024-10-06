@@ -19,26 +19,28 @@ wandb:
 
 # Policy specific configurations
 policy_config:
-  lr: 0.001
   camera_names: ["camera1", "camera2"]
   action_dim: 14
   observation_horizon: 1
   action_horizon: 8
-  prediction_horizon: 8
+  prediction_horizon: 16
   num_queries: 8
   num_inference_timesteps: 10
-  ema_power: 0.75
   vq: false
-  backbone: "resnet18"
   multi_gpu: false
   is_eval: false
+
+config:
+  num_epochs:
+  ckpt_dir:
+  episode_len: 
+  state_dim:
+  lr: 0.001
 
 temporal_agg: false
 log_wandb: false
 gpu: 0
 max_skill_len: 200
-image_encoder: "resnet18"
-low_res: 1
 multi_gpu: false
 history_len: 2
 history_skip_frame: 50

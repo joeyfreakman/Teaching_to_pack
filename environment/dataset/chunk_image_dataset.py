@@ -12,8 +12,6 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from src.aloha.aloha_scripts.visualize_episodes import visualize_joints,load_hdf5
 
-START_ARM_POSE = [0, -0.96, 1.16, 0, -0.3, 0, -0.02239,  0, -0.96, 1.16, 0, -0.3, 0, 0.02239]
-
 class ChunkImageDataset(Dataset):
     def __init__(
         self,
@@ -40,7 +38,7 @@ class ChunkImageDataset(Dataset):
         self.episode_starts = [0]
         self.total_len = 0
         for episode_id in self.episode_ids:
-            with h5py.File(os.path.join(self.dataset_dir, f"episode_{episode_id}_optimized.hdf5"), "r") as f:
+            with h5py.File(os.path.join(self.dataset_dir, f"episode_{episode_id}_chunks.hdf5"), "r") as f:
                 episode_len = len(f["/action"])
                 self.total_len += episode_len
                 self.episode_starts.append(self.total_len)
@@ -56,28 +54,21 @@ class ChunkImageDataset(Dataset):
         local_index = index - self.episode_starts[episode_idx]
 
         episode_id = self.episode_ids[episode_idx]
-        with h5py.File(os.path.join(self.dataset_dir, f"episode_{episode_id}_optimized.hdf5"), "r",rdcc_nbytes=14*1024*1024) as f:
-            compressed = f.attrs.get("compress", False)
-            
-            # Get episode length
-            episode_length = len(f["/action"])
-            # Calculate max start
-            max_start = min(local_index, episode_length - self.obs_horizon)
-
-            image_sequence = []
-            for cam_name in self.camera_names:
-                cam_images = f[f"/observations/images/{cam_name}"][max_start:max_start + self.obs_horizon]
-                if compressed:
-                    t0= time.time()
-                    cam_images = np.array([cv2.imdecode(img, 1) for img in cam_images])
-                    print(f"Decompress time: {time.time()-t0:.5f}s")
-                    cam_images = np.array([cv2.cvtColor(img, cv2.COLOR_BGR2RGB) for img in cam_images])
-                image_sequence.append(cam_images)
-            image_sequence = np.stack(image_sequence, axis=1)
-            
-            action_sequence = f["/action"][max_start:max_start + self.max_len]
-        image_data = torch.from_numpy(image_sequence).float()
+        episode_name = f"episode_{episode_id}_chunks"
         
+        image_dict, action_data, _ = self.load_hdf5(self.dataset_dir, episode_name)
+        
+        max_start = min(local_index, len(action_data) - self.obs_horizon)
+        
+        image_sequence = []
+        for cam_name in self.camera_names:
+            cam_images = image_dict[cam_name][max_start:max_start + self.obs_horizon]
+            image_sequence.append(cam_images)
+        image_sequence = np.stack(image_sequence, axis=1)
+        
+        action_sequence = action_data[max_start:max_start + self.max_len]
+        
+        image_data = torch.from_numpy(image_sequence).float()
         image_data = torch.einsum("t k h w c -> t k c h w", image_data)
         
         action_data = torch.from_numpy(action_sequence).float()
@@ -126,6 +117,42 @@ class ChunkImageDataset(Dataset):
         
         return image_data, action_data, is_pad
     
+    @staticmethod
+    def load_hdf5(dataset_dir, dataset_name):
+        dataset_path = os.path.join(dataset_dir, dataset_name + ".hdf5")
+        if not os.path.isfile(dataset_path):
+            print(f"Dataset does not exist at \n{dataset_path}\n")
+            exit()
+
+        with h5py.File(dataset_path, "r") as root:
+            is_sim = root.attrs["sim"]
+            compressed = root.attrs.get("compress", False)
+            action = root["/action"][()]
+            image_dict = dict()
+            for cam_name in root[f"/observations/images/"].keys():
+                # skip depth images
+                if "_depth" in cam_name:
+                    continue
+                image_dict[cam_name] = root[f"/observations/images/{cam_name}"][()]
+            if compressed:
+                compress_len = root["/compress_len"][()]
+
+        if compressed:
+            for cam_id, cam_name in enumerate(image_dict.keys()):
+                # un-pad and uncompress
+                padded_compressed_image_list = image_dict[cam_name]
+                image_list = []
+                for frame_id, padded_compressed_image in enumerate(
+                    padded_compressed_image_list
+                ):  # [:1000] to save memory
+                    image_len = int(compress_len[cam_id, frame_id])
+                    compressed_image = padded_compressed_image
+                    image = cv2.imdecode(compressed_image, 1)
+                    image_list.append(image)
+                image_dict[cam_name] = image_list
+
+        return image_dict, action, compressed
+    
 
     @staticmethod
     def get_norm_stats(dataset_dirs, num_episodes_list):
@@ -133,7 +160,7 @@ class ChunkImageDataset(Dataset):
 
         for dataset_dir, num_episodes in zip(dataset_dirs, num_episodes_list):
             for episode_idx in range(num_episodes):
-                dataset_path = os.path.join(dataset_dir, f"episode_{episode_idx}_optimized.hdf5")
+                dataset_path = os.path.join(dataset_dir, f"episode_{episode_idx}_chunks.hdf5")
                 with h5py.File(dataset_path, "r") as root:
                     action = root["/action"][()]
                 all_action_data.append(torch.from_numpy(action))
@@ -228,7 +255,7 @@ def load_merged_data(
 Test the Dataset class.
 
 Example usage:
-$ python chunk_image_dataset.py --dataset_dir /mnt/d/kit/ALR/dataset/ttp_optimized/
+$ python chunk_image_dataset.py --dataset_dir /mnt/d/kit/ALR/dataset/ttp_test/
 """
 if __name__ == "__main__":
     t_start = time.time()
@@ -239,9 +266,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     camera_names = ["cam_high","cam_left_wrist", "cam_low",  "cam_right_wrist"]
-    history_len = 1
+    history_len = 2
     prediction_offset = 14
-    num_episodes = 10 # Just to sample from the first 50 episodes for testing
+    num_episodes = 5 # Just to sample from the first 50 episodes for testing
     norm_stats = ChunkImageDataset.get_norm_stats([args.dataset_dir], [num_episodes])
     max_len = history_len + prediction_offset + 1
     obs_len = history_len + 1
@@ -266,7 +293,7 @@ if __name__ == "__main__":
     # image_data, action_data, is_pad = dataset[idx]
     # true_action = post_process(action_data.numpy())
 
-    # _, _, _, original_action, _ = load_hdf5(args.dataset_dir, dataset_name)
+    # _, _, original_action, _ = load_hdf5(args.dataset_dir, dataset_name)
 
     # # 确保true_action长度与原始action相同
     # original_action = original_action[idx:len(true_action)+idx]

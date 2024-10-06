@@ -2,9 +2,9 @@
 import pathlib
 DATA_DIR = '/mnt/d/kit/ALR/dataset/ttp_compressed'
 TASK_CONFIGS ={
-    'teachingtopack':{
-        'dataset_dir': DATA_DIR + '/teachingtopack',
-        'num_episodes': 20,
+    'task1':{
+        'dataset_dir': DATA_DIR + '/task1',
+        'num_episodes': 10,
         'episode_len': 750,
         'camera_names': ['cam_high', 'cam_low', 'cam_left_wrist', 'cam_right_wrist']
     },

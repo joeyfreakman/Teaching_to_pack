@@ -14,8 +14,7 @@ from tqdm import tqdm
 import torch.nn.functional as F
 import torch.nn as nn
 from scripts.data_pruning import random_crop, crop_resize
-from base_dataset import Highdim_dataset
-
+from environment.dataset.base_dataset import Highdim_dataset
 from torch.utils.data import DataLoader, ConcatDataset
 import argparse
 import matplotlib
@@ -101,7 +100,7 @@ class Dataprocesser(Highdim_dataset):
             image_sequence = torch.tensor(image_sequence, dtype=torch.float32)
             image_sequence = torch.einsum("t k h w c -> t k c h w", image_sequence)
             image_sequence = image_sequence / 255.0
-
+            
         return image_sequence
     
     def get_seq_length(self, idx):
@@ -123,7 +122,7 @@ def load_merged_data(
     prediction_offset=10,
     history_skip_frame=1,
     random_crop=False,
-    dagger_ratio=None,
+    dagger_ratio=0.95,
 ):
     assert len(dataset_dirs) == len(
         num_episodes_list
@@ -267,10 +266,10 @@ if __name__ == "__main__":
 
     # Parameters for the test
     camera_names = ["cam_high", "cam_low", "cam_left_wrist", "cam_right_wrist"]
-    history_len = 2
+    history_len = 3
     prediction_offset = 10
-    num_episodes = 10  # Just to sample from the first 10 episodes for testing
-    history_skip_frame = 1
+    num_episodes = 50  # Just to sample from the first 50 episodes for testing
+    history_skip_frame = 10
     # Create a Dataset instance
     dataset = Dataprocesser(
         list(range(num_episodes)),

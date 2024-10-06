@@ -10,6 +10,8 @@ from tqdm import tqdm
 import cv2
 import random
 import sys
+from torchvision import transforms
+from PIL import Image
 
 
 
@@ -129,22 +131,39 @@ if __name__ == "__main__":
 
     with open(image_path, 'rb') as f:
         compressed_image = f.read()
-
+    original_size = [480, 640]
     compressed_image_np = np.frombuffer(compressed_image, np.uint8)
     decompressed_image = decompress_image(compressed_image_np)
     center_cropped_image = center_crop(decompressed_image, crop_percentage=0.95)
     crop_resized_image = crop_resize(decompressed_image, resize=False)
     random_cropped_image = random_crop(decompressed_image, crop_percentage=0.95)
+    rgb_image = cv2.cvtColor(decompressed_image, cv2.COLOR_BGR2RGB)
+    decompressed_image_pil = Image.fromarray(cv2.cvtColor(decompressed_image, cv2.COLOR_BGR2RGB))
+
+    transform_image = transforms.Compose([
+    transforms.RandomCrop(size=[int(0.95 * original_size[0]), int(0.95 * original_size[1])]),
+    transforms.Resize(original_size, antialias=True),
+    transforms.RandomRotation(degrees=[-5.0, 5.0], expand=False),
+    transforms.ColorJitter(brightness=0.3, contrast=0.4, saturation=0.5)]
+    )
+    transformed_image = transform_image(decompressed_image_pil)
+    transformed_image = np.array(transformed_image)
+    
     # Optionally save the cropped image
     # output_path_1 = os.path.join(image_dir, f'{args.camera_name}_cropped.jpg')
     # output_path_2 = os.path.join(image_dir, f'{args.camera_name}_random_cropped.jpg')
     # output_path_3 = os.path.join(image_dir, f'{args.camera_name}_crop_resized.jpg')
+    # output_path_4 = os.path.join(image_dir, f'{args.camera_name}_rgb.jpg')
+    output_path_5 = os.path.join(image_dir, f'{args.camera_name}_transformed.jpg')
     # cv2.imwrite(output_path_1, center_cropped_image)
     # cv2.imwrite(output_path_2, random_cropped_image)
     # cv2.imwrite(output_path_3, crop_resized_image)
+    # cv2.imwrite(output_path_4, rgb_image)
+    cv2.imwrite(output_path_5, transformed_image)
     # print(f'Saved cropped image to: {output_path_1}')
     # print(f'Saved random cropped image to: {output_path_2}')
     # print(f'Saved crop resized image to: {output_path_3}')
-    # test=Imagereader(args.dataset_dir, 10, 11)
-    # if test.load_hdf5(args.dataset_dir, f'episode_{args.episode_idx}'):
-    #     print(test.is_sim)
+    # print(f'Saved rgb image to: {output_path_4}')
+    test=Imagereader(args.dataset_dir, 10, 11)
+    if test.load_hdf5(args.dataset_dir, f'episode_{args.episode_idx}'):
+        print(test.is_sim)

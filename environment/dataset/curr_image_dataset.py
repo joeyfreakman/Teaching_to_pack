@@ -39,7 +39,9 @@ class CurrImageDataset(Dataset):
         
         with h5py.File(dataset_path, "r") as root:
             compressed = root.attrs.get("compress", False)
-            start_ts, end_ts = np.random.choice(root["/action"].shape[0]), root["/action"].shape[0] - 1
+            episode_len = len(root["/action"])
+            start_ts = np.random.choice(episode_len)
+            end_ts = min(start_ts + self.max_len, episode_len)
 
             # Load and process images
             image_dict = {cam: root[f"/observations/images/{cam}"][start_ts] for cam in self.camera_names}
@@ -53,16 +55,14 @@ class CurrImageDataset(Dataset):
             image_data = torch.einsum("k h w c -> k c h w", torch.from_numpy(all_cam_images / 255.0))
 
             # Process actions and padding
-            action = root["/action"][start_ts:end_ts + 1]
+            action = root["/action"][start_ts:end_ts]
             padded_action = np.zeros((self.max_len,) + action.shape[1:], dtype=np.float32)
             padded_action[:len(action)] = action
-            is_pad = torch.from_numpy(np.pad(np.ones(len(action)), (0, self.max_len - len(action)), 'constant')).bool()
+            is_pad = torch.zeros(self.max_len, dtype=torch.bool)
+            is_pad[len(action):] = True
 
-            if self.policy_class == "Diffusion":
-                action_data = 2 * (torch.from_numpy(padded_action) - self.norm_stats["action_min"]) / \
-                              (self.norm_stats["action_max"] - self.norm_stats["action_min"]) - 1
-            else:
-                action_data = (torch.from_numpy(padded_action) - self.norm_stats["action_mean"]) / self.norm_stats["action_std"]
+            action_data = 2 * (torch.from_numpy(padded_action) - self.norm_stats["action_min"]) / \
+                        (self.norm_stats["action_max"] - self.norm_stats["action_min"]) - 1
 
             # Initialize transformations if needed
             if self.transformations is None:
@@ -70,7 +70,6 @@ class CurrImageDataset(Dataset):
 
             for transform in self.transformations:
                 image_data = transform(image_data).float()
-                
 
             return image_data, action_data, is_pad
 
@@ -125,8 +124,6 @@ def load_merged_data(
     max_len=None,
     dagger_ratio=None,
     policy_class=None,
-    history_len=1,
-    prediction_offset=14,
 ):
     assert len(dataset_dirs) == len(num_episodes_list), "Length of dataset_dirs and num_episodes_list must be the same."
     if dagger_ratio is not None:
@@ -177,7 +174,7 @@ def load_merged_data(
         val_dataloader = DataLoader(merged_datasets[1], batch_size=batch_size_train, shuffle=True, **dataloader_params)
 
     pretest_dataloader = DataLoader(merged_datasets[2], batch_size=batch_size_train, shuffle=False, **{**dataloader_params, 'num_workers': 2, 'prefetch_factor': 8})
-    test_dataloader = DataLoader(merged_datasets[3], batch_size=batch_size_train, shuffle=False, **{**dataloader_params, 'num_workers': 2, 'prefetch_factor': 8})
+    test_dataloader = DataLoader(merged_datasets[3], batch_size=batch_size_train, shuffle=True, **{**dataloader_params, 'num_workers': 2, 'prefetch_factor': 8})
  
     return train_dataloader, norm_stats, val_dataloader, pretest_dataloader, test_dataloader
 
@@ -185,7 +182,7 @@ def load_merged_data(
 Test the Dataset class.
 
 Example usage:
-$ python curr_image_dataset.py --dataset_dir /mnt/d/kit/ALR/dataset/ttp_compressed/
+$ python /root/Teaching_to_pack/environment/dataset/curr_image_dataset.py --dataset_dir /mnt/d/kit/ALR/dataset/ttp_compressed/
 """
 if __name__ == "__main__":
     t_start = time.time()
@@ -198,7 +195,7 @@ if __name__ == "__main__":
     camera_names = ["cam_high","cam_left_wrist", "cam_low",  "cam_right_wrist"]
     num_episodes = 50 # Just to sample from the first 50 episodes for testing
     norm_stats = CurrImageDataset.get_norm_stats([args.dataset_dir], [num_episodes])
-    max_len = 752
+    max_len = 40
     dataset = CurrImageDataset(
         list(range(num_episodes)),
         args.dataset_dir,
@@ -270,13 +267,15 @@ if __name__ == "__main__":
             
             
 
-        
+    # idx = 48    
     idx = np.random.randint(0, len(dataset))
     print(f"dataset_len: {len(dataset)}")
     image_sequence, action_data, is_pad = dataset[idx]
     print(f"Sampled dataset index: {idx}")
-    print(f"Image sequence shape: {image_sequence.shape}")
-    print(f"Action data shape: {action_data.shape}")
+    # print(f"Image sequence shape: {image_sequence.shape}")
+    # print(f"Action data shape: {action_data.shape}")
+    print(f'action_data: {action_data}')    
+    # print(f"Is pad : {is_pad}")
     output_dir = os.path.join(dataset.dataset_dir,"plot")
     os.makedirs(output_dir, exist_ok=True)
     

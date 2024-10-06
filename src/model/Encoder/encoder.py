@@ -3,7 +3,7 @@ import copy
 import torch
 import torch.nn as nn
 import torchvision
-from crop_randomizer import CropRandomizer
+from model.crop_randomizer import CropRandomizer
 from tensor_utils import replace_submodules
 
 class ModuleAttrMixin(nn.Module):
