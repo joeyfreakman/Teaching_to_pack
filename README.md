@@ -3,7 +3,7 @@
 **This project is aim to explpore the efforts of deploying diffusion policy on aloha robots.
 Mainly focusing on CNN-based and transformer-based diffusion policy.**
 
-![image](/root/Teaching_to_pack/environment/dataset/data/denoising_step_0.gif)
+![image](environment/dataset/data/denoising_step_0.gif)
 
 # Installation 
 
@@ -11,37 +11,44 @@ environment creation:
 ```console
 conda env create -f env_ttp.yaml
 ```
-/Teaching_to_pack/src/aloha/: 
+Clone the necessary repositories:
+
+For the Aloha repository:
 ```console
+cd Teaching_to_pack/src/aloha/
 git clone https://github.com/tonyzhaozh/aloha.git
 ```
-/Teaching_to_pack/src/d3il_david/: 
+For the d3il_david repository: 
 ```console
-git clone https://github.com/joeyfreakman/d3il_david.git 
+cd Teaching_to_pack/src/d3il_david/
+git clone https://github.com/joeyfreakman/d3il_david.git
 git checkout real_robot
 ``` 
 # Usage
 
 ## File system
 
+```markdown
 Teaching_to_pack
-├── environment # 
-│   ├── data # data saving folder 
-│   ├── dataset # experiments of different datasets and dataloader which decrease I/O 
+├── environment
+│   ├── data             # Data saving folder 
+│   ├── dataset          # Experiments of different datasets and dataloader which decrease I/O 
 │   ...
-├── scripts    # functions of dealing with data
-│   ├── data_compressor    # code for compressing raw hdf5 data
-│   ├── data_pruning       # apply modifications on collected images
-│   ├── spatial position   # plot spatial trajectory of end effector
+├── scripts              # Functions for handling data
+│   ├── data_compressor  # Code for compressing raw hdf5 data
+│   ├── data_pruning     # Modifications on collected images
+│   ├── spatial_position # Plot spatial trajectory of end effector
 │   ...
-├── src # model and policy
-│   ├── aloha # aloha robots functions and data-collection and hyperparameters
-│   ├── config # task configs and model hyper parameters
-│   ├── core  # code for running the model
-│   ├── d3il_david # transformer-based diffusion, usage referring to https://github.com/joeyfreakman/d3il_david/blob/real_robot/README.md
+├── src                  # Model and policy
+│   ├── aloha            # Aloha robots' functions, data collection, and hyperparameters
+│   ├── config           # Task configs and model hyperparameters
+│   ├── core             # Core code for running the model
+│   ├── d3il_david       # Transformer-based diffusion; refer to [d3il_david README](https://github.com/joeyfreakman/d3il_david/blob/real_robot/README.md)
 │   ...
-│   ├── model # vision encoder backbone and some support-functions
-│   └── policy # cnn-based diffusion policy matching with different format datasets
+│   ├── model            # Vision encoder backbone and supporting functions
+│   └── policy           # CNN-based diffusion policy for different format datasets
+```
+
 
 ## run cnn-based policy 
 
@@ -53,10 +60,8 @@ bash train.sh
 
 ## run diffusion-based policy
 
-other modifications follow the instructions of d3il repository
+For additional modifications, follow the instructions in the d3il repository:
 ```console
 cd ~/Teaching_to_pack/src/d3il_david
 python run.py
 ```
-
-[demoGifPath]: /mnt/d/kit/ALR/dataset/test_david/test_results/denoising_step_0.gif
