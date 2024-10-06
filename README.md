@@ -1,9 +1,16 @@
 ﻿# Teaching-to-pack
-This project is aim to explpore the efforts of deploying diffusion policy on aloha robots.
-Mainly focusing on CNN-based and transformer-based diffusion policy.
+
+**This project is aim to explpore the efforts of deploying diffusion policy on aloha robots.
+Mainly focusing on CNN-based and transformer-based diffusion policy.**
+
 ![Demo GIF](/mnt/d/kit/ALR/dataset/test_david/test_results/denoising_step_0.gif)
+
 # Installation 
-environment creation: conda env create -f env_ttp.yaml
+
+environment creation: 
+```console
+conda env create -f env_ttp.yaml
+```
 /Teaching_to_pack/src/aloha/: 
 ```console
 git clone https://github.com/tonyzhaozh/aloha.git
