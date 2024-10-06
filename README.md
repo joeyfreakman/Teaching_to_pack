@@ -21,7 +21,9 @@ git clone https://github.com/joeyfreakman/d3il_david.git
 git checkout real_robot
 ``` 
 # Usage
+
 ## File system
+
 Teaching_to_pack
 ├── environment # 
 │   └── data # data saving folder 
@@ -42,12 +44,15 @@ Teaching_to_pack
 │   ├──policy # cnn-based diffusion policy matching with different format datasets
 
 ## run cnn-based policy 
+
 modify the train.sh file to run the file u need
 ```console
 cd ~/Teaching_to_pack/src/core
 bash train.sh 
 ```
+
 ## run diffusion-based policy
+
 other modifications follow the instructions of d3il repository
 ```console
 cd ~/Teaching_to_pack/src/d3il_david
