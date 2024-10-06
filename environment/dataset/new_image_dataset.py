@@ -36,6 +36,25 @@ class ImageDataset(torch.utils.data.Dataset):
         self.history_len = history_len
         self.prediction_offset = prediction_offset
         self.history_skip_frame = history_skip_frame
+        self.episode_starts = [0]
+        self.total_len = 0
+        self.valid_curr_ts = []
+        
+        for episode_id in self.episode_ids:
+            with h5py.File(os.path.join(self.dataset_dir, f"episode_{episode_id}.hdf5"), "r") as f:
+                episode_len = len(f["/action"])
+                valid_range = episode_len - self.prediction_offset - self.history_len * self.history_skip_frame
+                
+                episode_curr_ts = np.arange(
+                    self.history_len * self.history_skip_frame,
+                    self.history_len * self.history_skip_frame + valid_range
+                )
+                
+                self.valid_curr_ts.extend(episode_curr_ts + self.total_len)
+                self.total_len += episode_len
+                self.episode_starts.append(self.total_len)
+        
+        self.valid_curr_ts = np.array(self.valid_curr_ts)
         if self.policy_class == "Diffusion":
                 self.transformations=transforms.Compose(
                         [
@@ -45,31 +64,40 @@ class ImageDataset(torch.utils.data.Dataset):
                     )
 
     def __len__(self):
-        return len(self.episode_ids)
+        return len(self.valid_curr_ts)
 
     def __getitem__(self, index):
-        index = int(index)
-        episode_id = self.episode_ids[index]
+        episode_idx = np.searchsorted(self.episode_starts, index, side='right') - 1
+        episode_id = self.episode_ids[episode_idx]
         dataset_path = os.path.join(self.dataset_dir, f"episode_{episode_id}.hdf5")
 
         with h5py.File(dataset_path, "r") as root:
             compressed = root.attrs.get("compress", False)
-            total_timesteps = root["/action"].shape[0]
-            curr_ts = np.random.randint(self.history_len * self.history_skip_frame, total_timesteps - self.prediction_offset)
+            curr_ts = self.valid_curr_ts[index] - self.episode_starts[episode_idx]
             start_ts = curr_ts - self.history_len * self.history_skip_frame
             target_ts = curr_ts + self.prediction_offset
+            # Load images and organize them into a dictionary
+            image_dict = {
+                cam_name: [
+                    cv2.cvtColor(
+                        cv2.imdecode(root[f"/observations/images/{cam_name}"][t], 1) if compressed else root[f"/observations/images/{cam_name}"][t],
+                        cv2.COLOR_BGR2RGB
+                    )
+                    for t in range(start_ts, curr_ts + 1, self.history_skip_frame)
+                ]
+                for cam_name in self.camera_names
+            }
 
-            def load_image(t):
-                images = {cam_name: root[f"/observations/images/{cam_name}"][t] for cam_name in self.camera_names}
-                if compressed:
-                    images = {cam_name: cv2.imdecode(img, 1) for cam_name, img in images.items()}
-                return np.stack([cv2.cvtColor(img, cv2.COLOR_BGR2RGB) for img in images.values()], axis=0)
+            # Convert images to torch tensors and apply transformations if available
+            for cam_name in image_dict:
+                images = np.stack(image_dict[cam_name], axis=0)
+                images = torch.tensor(images, dtype=torch.float32).permute(0, 3, 1, 2) / 255.0
+                if self.transformations:
+                    images = torch.stack([self.transformations(img) for img in images])
+                image_dict[cam_name] = images
 
-            image_sequence = [load_image(t) for t in range(start_ts, curr_ts +1, self.history_skip_frame)]
             action_sequence = root["/action"][start_ts:target_ts+1]
             
-
-            image_data = torch.tensor(np.stack(image_sequence, axis=0), dtype=torch.float32).permute(0, 1, 4, 2, 3) / 255.0
             
             action_data = torch.from_numpy(np.array(action_sequence)).float()
 
@@ -83,11 +111,8 @@ class ImageDataset(torch.utils.data.Dataset):
             is_pad = torch.zeros(self.max_len, dtype=torch.bool)
             is_pad[action_len:] = True
 
-            if self.transformations:
-                image_data = torch.stack([self.transformations(img) for img in image_data])
-
             action_data = ((action_data - self.norm_stats["action_min"]) / (self.norm_stats["action_max"] - self.norm_stats["action_min"])) * 2 - 1
-            return image_data, action_data, is_pad
+            return image_dict, action_data, is_pad
         
     @staticmethod
     def get_norm_stats(dataset_dirs, num_episodes_list):
@@ -289,7 +314,7 @@ def load_merged_data(
 Test the Dataset class.
 
 Example usage:
-$ python new_image_dataset.py --dataset_dir /mnt/d/kit/ALR/dataset/ttp_compressed/
+$ python /root/Teaching_to_pack/environment/dataset/new_image_dataset.py --dataset_dir /mnt/d/kit/ALR/dataset/ttp_compressed/
 """
 if __name__ == "__main__":
     t0= time.time()
@@ -301,9 +326,9 @@ if __name__ == "__main__":
 
     camera_names = ["cam_high", "cam_low", "cam_left_wrist", "cam_right_wrist"]
     history_len = 1
-    prediction_offset = 14
+    prediction_offset = 8
     num_episodes = 50  # Just to sample from the first 50 episodes for testing
-    history_skip_frame = 8
+    history_skip_frame = 7
     norm_stats = ImageDataset.get_norm_stats([args.dataset_dir], [num_episodes])
     max_len = history_skip_frame*history_len + prediction_offset + 1
     obs_len = history_len + 1
@@ -322,10 +347,10 @@ if __name__ == "__main__":
     idx = np.random.randint(0, len(dataset))
     print(f'len(dataset): {len(dataset)}')
     image_sequence, action_data, is_pad = dataset[idx]
-    print(f"image_sequence.shape: {image_sequence.shape}")
+    # print(f"image_sequence.shape: {image_sequence.shape}")
     print(f"Sampled episode index: {idx}")
-    print(f"action_data.shape: {action_data.shape}")
-    print(f"is_pad.shape: {is_pad.shape}")
+    # print(f"action_data.shape: {action_data.shape}")
+    # print(f"is_pad.shape: {is_pad.shape}")
     output_dir = os.path.join(dataset.dataset_dir,"plot")
     os.makedirs(output_dir, exist_ok=True)
     
@@ -334,7 +359,7 @@ if __name__ == "__main__":
         for cam_idx, cam_name in enumerate(camera_names):
             plt.subplot(1, len(camera_names), cam_idx + 1)
             img_rgb = cv2.cvtColor(
-                image_sequence[t, cam_idx].permute(1, 2, 0).numpy(), cv2.COLOR_BGR2RGB
+                image_sequence[cam_name][t].permute(1, 2, 0).numpy(), cv2.COLOR_BGR2RGB
             )
             plt.imshow(img_rgb)
             plt.title(f"{cam_name} at timestep {t}")

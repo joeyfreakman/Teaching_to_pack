@@ -7,13 +7,12 @@ from torchvision import transforms
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
 from src.model.util import DAggerSampler
 import argparse
-from torchvision import transforms
 import time
 from tqdm import tqdm
+import tikzplotlib
 import matplotlib.pyplot as plt
-from src.aloha.aloha_scripts.visualize_episodes import visualize_joints,load_hdf5
 
-class Dictimagedataset(Dataset):
+class ObsDataset(Dataset):
     def __init__(
         self,
         episode_ids,
@@ -24,7 +23,7 @@ class Dictimagedataset(Dataset):
         prediction_offset: int,
         max_len=None,
         policy_class=None,
-        ):
+    ):
         super().__init__()
         self.episode_ids = episode_ids if len(episode_ids) > 0 else [0]
         self.dataset_dir = dataset_dir
@@ -32,10 +31,10 @@ class Dictimagedataset(Dataset):
         self.norm_stats = norm_stats
         self.history_len = history_len
         self.prediction_offset = prediction_offset
-        self.max_len = history_len + prediction_offset + 1
-        self.policy_class = policy_class
-        self.transformations = None
         self.obs_horizon = history_len + 1
+        self.max_len = max_len
+        self.transformations = None
+        self.policy_class = policy_class
         self.episode_starts = [0]
         self.total_len = 0
         for episode_id in self.episode_ids:
@@ -44,11 +43,9 @@ class Dictimagedataset(Dataset):
                 self.total_len += episode_len
                 self.episode_starts.append(self.total_len)
         if self.transformations is None:
-            original_size = (288,384)
-            ratio = 0.95
+            new_size = (288,384)#(480,640)
             self.transformations= transforms.Compose([
-    
-                transforms.Resize(original_size,antialias=True),
+                transforms.Resize(new_size,antialias=True),
             ])
             if self.policy_class == "Diffusion":
                 self.transformations.transforms.extend(
@@ -60,7 +57,7 @@ class Dictimagedataset(Dataset):
 
     def __len__(self):
         return self.total_len
-
+    
     def __getitem__(self, index):
         episode_idx = 0
         while index >= self.episode_starts[episode_idx + 1]:
@@ -85,46 +82,58 @@ class Dictimagedataset(Dataset):
                     cam_images = np.array(cam_images)
 
                 image_dict[cam_name] = torch.from_numpy(cam_images).float().permute(0, 3, 1, 2)
+                image_dict[cam_name] = image_dict[cam_name] / 255.0
                 image_dict[cam_name]= self.transformations(image_dict[cam_name])
 
-                image_dict[cam_name] = image_dict[cam_name] / 255.0
+                
             
-            assert all(image_dict[cam].shape == image_dict[self.camera_names[0]].shape for cam in self.camera_names), "All cameras should have the same image dimensions"
-
+            qpos_sequence = f["/observations/qpos"][max_start:max_start + self.obs_horizon]
             action_sequence = f["/action"][max_start:max_start + self.max_len]
 
-        action_data = torch.from_numpy(action_sequence).float()
-        action_len = len(action_sequence)
-        if action_len < self.max_len:
-            padded_action = torch.zeros((self.max_len, action_data.shape[1]), dtype=torch.float32)
-            padded_action[:action_len] = action_data
-            padded_action[action_len:] = action_data[-1]
-            action_data = padded_action
+            action_data = torch.from_numpy(np.array(action_sequence)).float()
+            qpos_data = torch.from_numpy(np.array(qpos_sequence)).float()
+            action_len = len(action_sequence)
+            if action_len < self.max_len:
+                padded_action = torch.zeros((self.max_len, action_data.shape[1]), dtype=torch.float32)
+                padded_action[:action_len] = action_data
+                action_data = padded_action
 
-        is_pad = torch.zeros(self.max_len, dtype=torch.bool)
-        is_pad[action_len:] = True
-                
-        action_data = (action_data - self.norm_stats["action_min"]) / (self.norm_stats["action_max"] - self.norm_stats["action_min"]) * 2 - 1
+            is_pad = torch.zeros(self.max_len, dtype=torch.bool)
+            is_pad[action_len:] = True
+            action_data = (action_data - self.norm_stats["action_min"]) / (self.norm_stats["action_max"] - self.norm_stats["action_min"]) * 2 - 1
+            qpos_data = (qpos_data - self.norm_stats["qpos_mean"]) / self.norm_stats[
+                "qpos_std"
+            ]
+            return image_dict, qpos_data, action_data, is_pad
         
-        return image_dict, action_data, is_pad
-    
-
     @staticmethod
     def get_norm_stats(dataset_dirs, num_episodes_list):
+        all_qpos_data = []
         all_action_data = []
 
+        # Iterate over each directory and the corresponding number of episodes
         for dataset_dir, num_episodes in zip(dataset_dirs, num_episodes_list):
             for episode_idx in range(num_episodes):
                 dataset_path = os.path.join(dataset_dir, f"episode_{episode_idx}.hdf5")
                 with h5py.File(dataset_path, "r") as root:
+                    qpos = root["/observations/qpos"][()]
                     action = root["/action"][()]
+                all_qpos_data.append(torch.from_numpy(qpos))
                 all_action_data.append(torch.from_numpy(action))
 
+        # Concatenate data from all directories
+        all_qpos_data = torch.cat(all_qpos_data, dim=0)
         all_action_data = torch.cat(all_action_data, dim=0)
 
+        # Normalize action data
         action_mean = all_action_data.mean(dim=[0]).float()
         action_std = all_action_data.std(dim=[0]).float()
         action_std = torch.clip(action_std, 1e-2, np.inf)
+
+        # Normalize qpos data
+        qpos_mean = all_qpos_data.mean(dim=[0]).float()
+        qpos_std = all_qpos_data.std(dim=[0]).float()
+        qpos_std = torch.clip(qpos_std, 1e-2, np.inf)
 
         action_min = all_action_data.min(dim=0).values.float()
         action_max = all_action_data.max(dim=0).values.float()
@@ -135,12 +144,13 @@ class Dictimagedataset(Dataset):
             "action_std": action_std.numpy(),
             "action_min": action_min.numpy() - eps,
             "action_max": action_max.numpy() + eps,
-        }
+            "qpos_mean": qpos_mean.numpy(),
+            "qpos_std": qpos_std.numpy(),
+            "example_qpos": all_qpos_data[-1].numpy(),
+        }  # example from the last loaded qpos
 
         return stats
-    
 
-    ### Merge multiple datasets
 def load_merged_data(
     dataset_dirs,
     num_episodes_list,
@@ -172,21 +182,19 @@ def load_merged_data(
             last_dataset_indices.extend(episode_indices)
         all_episode_indices.extend(episode_indices)
 
-    norm_stats = Dictimagedataset.get_norm_stats(dataset_dirs, num_episodes_list)
+    norm_stats = ObsDataset.get_norm_stats(dataset_dirs, num_episodes_list)
 
     train_ratio = 0.8
-    val_ratio = 0.1
 
     shuffled_indices = np.random.permutation(all_episode_indices)
     train_split = int(train_ratio * len(all_episode_indices))
-    val_split = int((train_ratio + val_ratio) * len(all_episode_indices))
     
     train_indices = shuffled_indices[:train_split]
-    val_indices = shuffled_indices[train_split:val_split]
-    pretest_indices = shuffled_indices[val_split:]
+    val_indices = shuffled_indices[train_split:]
+
 
     train_datasets = [
-        Dictimagedataset(
+        ObsDataset(
             [idx for d, idx in train_indices if d == dataset_dir],
             dataset_dir,
             camera_names,
@@ -199,7 +207,7 @@ def load_merged_data(
         for dataset_dir in dataset_dirs
     ]
     val_datasets = [
-        Dictimagedataset(
+        ObsDataset(
             [idx for d, idx in val_indices if d == dataset_dir], 
             dataset_dir, 
             camera_names, 
@@ -212,27 +220,10 @@ def load_merged_data(
         for dataset_dir in dataset_dirs
     ]
     
-    pretest_datasets = [
-        Dictimagedataset(
-            [idx for d, idx in pretest_indices if d == dataset_dir],
-            dataset_dir,
-            camera_names,
-            norm_stats,
-            history_len,
-            prediction_offset,
-            max_len,
-            policy_class=policy_class,
-        )
-        for dataset_dir in dataset_dirs
-    ]
-    for dataset in train_datasets + val_datasets + pretest_datasets:
-        if len(dataset) == 0:
-            print(f"Warning: Empty dataset found in {dataset.dataset_dir}")
 
-    test_datasets = train_datasets + val_datasets + pretest_datasets
+    test_datasets = train_datasets + val_datasets 
     merged_train_dataset = ConcatDataset(train_datasets)
     merged_val_dataset = ConcatDataset(val_datasets)
-    merged_pretest_dataset = ConcatDataset(pretest_datasets)
     merged_test_dataset = ConcatDataset(test_datasets)
 
     train_dataloader = DataLoader(
@@ -253,14 +244,6 @@ def load_merged_data(
         prefetch_factor=4,
         persistent_workers=True,
     )
-    pretest_dataloader = DataLoader(
-        merged_pretest_dataset,
-        batch_size=batch_size_train,
-        shuffle=False,
-        pin_memory=True,
-        num_workers=4,
-        prefetch_factor=1,
-    )
     test_dataloader = DataLoader(
         merged_test_dataset,
         batch_size=1,
@@ -269,13 +252,13 @@ def load_merged_data(
         num_workers=4,
         prefetch_factor=1,
     )
-    return train_dataloader, norm_stats, val_dataloader, pretest_dataloader, test_dataloader
+    return train_dataloader, norm_stats, val_dataloader, test_dataloader
 
 """
 Test the Dataset class.
 
 Example usage:
-$ python dict_image_dataset.py --dataset_dir /mnt/d/kit/ALR/dataset/ttp_compressed/
+$ python /root/Teaching_to_pack/environment/dataset/obs_dataset.py --dataset_dir /mnt/d/kit/ALR/dataset/ttp_compressed/
 """
 if __name__ == "__main__":
     t_start = time.time()
@@ -289,10 +272,10 @@ if __name__ == "__main__":
     history_len = 1
     prediction_offset = 14
     num_episodes = 50  # Just to sample from the first 50 episodes for testing
-    norm_stats = Dictimagedataset.get_norm_stats([args.dataset_dir], [num_episodes])
+    norm_stats = ObsDataset.get_norm_stats([args.dataset_dir], [num_episodes])
     max_len = history_len + prediction_offset + 1
     obs_len = history_len + 1
-    dataset = Dictimagedataset(
+    dataset = ObsDataset(
         list(range(num_episodes)),
         args.dataset_dir,
         camera_names,
@@ -302,7 +285,7 @@ if __name__ == "__main__":
         max_len,
         policy_class="Diffusion",
     )
-    stats = Dictimagedataset.get_norm_stats([args.dataset_dir], [num_episodes])
+    stats = ObsDataset.get_norm_stats([args.dataset_dir], [num_episodes])
     dataset_name = 'episode_0'
     save_dir = os.path.join(args.dataset_dir, "test")
     post_process = (
@@ -362,7 +345,7 @@ if __name__ == "__main__":
         
     idx = np.random.randint(0, len(dataset))
     print(f"dataset_len: {len(dataset)}")
-    image_sequence, action_data, is_pad = dataset[idx]
+    image_sequence,qpos_data, action_data, is_pad = dataset[idx]
     print(f"Sampled dataset index: {idx}")
     
     num = image_sequence['cam_high'].shape[0]

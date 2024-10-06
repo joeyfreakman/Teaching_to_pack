@@ -9,7 +9,9 @@ from src.model.util import DAggerSampler
 import argparse
 import time
 from tqdm import tqdm
+import tikzplotlib
 import matplotlib.pyplot as plt
+
 
 class CurrImageDataset(Dataset):
     def __init__(
@@ -28,31 +30,41 @@ class CurrImageDataset(Dataset):
         self.norm_stats = norm_stats
         self.max_len = max_len
         self.policy_class = policy_class
+        self.episode_starts = [0]
+        self.total_len = 0
         self.transformations = None
+        for episode_id in self.episode_ids:
+            with h5py.File(os.path.join(self.dataset_dir, f"episode_{episode_id}.hdf5"), "r") as f:
+                episode_len = len(f["/action"])
+                self.total_len += episode_len
+                self.episode_starts.append(self.total_len)
 
     def __len__(self):
-        return len(self.episode_ids)
+        return self.total_len
 
     def __getitem__(self, index):
-        episode_id = self.episode_ids[index]
+        episode_idx = 0
+        while index >= self.episode_starts[episode_idx + 1]:
+            episode_idx += 1
+        local_index = index - self.episode_starts[episode_idx]
+
+        episode_id = self.episode_ids[episode_idx]
         dataset_path = os.path.join(self.dataset_dir, f"episode_{episode_id}.hdf5")
         
         with h5py.File(dataset_path, "r") as root:
             compressed = root.attrs.get("compress", False)
             episode_len = len(root["/action"])
-            start_ts = np.random.choice(episode_len)
+            start_ts = local_index
             end_ts = min(start_ts + self.max_len, episode_len)
 
             # Load and process images
             image_dict = {cam: root[f"/observations/images/{cam}"][start_ts] for cam in self.camera_names}
             if compressed:
-                for cam in image_dict:
-                    image = cv2.imdecode(image_dict[cam], 1)
-                    image_dict[cam] = np.array(image)
+                image_dict = {cam: cv2.imdecode(img, 1) for cam, img in image_dict.items()}
 
             # Convert images to RGB and stack them
-            all_cam_images = np.stack([cv2.cvtColor(image_dict[cam], cv2.COLOR_BGR2RGB) for cam in self.camera_names])
-            image_data = torch.einsum("k h w c -> k c h w", torch.from_numpy(all_cam_images / 255.0))
+            all_cam_images = np.stack([cv2.cvtColor(img, cv2.COLOR_BGR2RGB) for img in image_dict.values()])
+            image_data = torch.from_numpy(all_cam_images).permute(0, 3, 1, 2).float() / 255.0
 
             # Process actions and padding
             action = root["/action"][start_ts:end_ts]
@@ -272,9 +284,9 @@ if __name__ == "__main__":
     print(f"dataset_len: {len(dataset)}")
     image_sequence, action_data, is_pad = dataset[idx]
     print(f"Sampled dataset index: {idx}")
-    # print(f"Image sequence shape: {image_sequence.shape}")
+    print(f"Image sequence shape: {image_sequence.shape}")
     # print(f"Action data shape: {action_data.shape}")
-    print(f'action_data: {action_data}')    
+    # print(f'action_data: {action_data}')    
     # print(f"Is pad : {is_pad}")
     output_dir = os.path.join(dataset.dataset_dir,"plot")
     os.makedirs(output_dir, exist_ok=True)
@@ -285,11 +297,11 @@ if __name__ == "__main__":
             plt.subplot(1, len(camera_names), cam_idx + 1)
             img_rgb = image_sequence[cam_idx].permute(1, 2, 0).numpy().astype(np.float32)  # Convert to float32
             img_rgb = cv2.cvtColor(img_rgb, cv2.COLOR_BGR2RGB)
-            plt.imshow(img_rgb)
+            # plt.imshow(img_rgb)
             plt.title(f"{cam_name} at timestep {t}")
     
         plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, f"image_sequence_timestep_{t}.png"))
+        tikzplotlib.save(os.path.join(output_dir, f"image_sequence_timestep_{t}.tex"))
         print(f"Saved image_sequence_timestep_{t}.png")
         plt.close()
 
