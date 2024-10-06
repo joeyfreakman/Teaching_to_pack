@@ -1,6 +1,6 @@
 #!/bin/bash
 
-python /root/Teaching_to_pack/src/core/curr_image/curr_test.py \
+python /root/Teaching_to_pack/src/core/curr_image/curr_image_run.py \
     --task_name task1 \
     --ckpt_dir /mnt/d/kit/ALR/dataset/test149/curr_test \
     --policy_class Diffusion \
@@ -11,5 +11,4 @@ python /root/Teaching_to_pack/src/core/curr_image/curr_test.py \
     --seed 42 \
     --gpu 0 \
     --log_wandb \
-    --test \
     --dataset_dir /mnt/d/kit/ALR/dataset/ttp_compressed/ \

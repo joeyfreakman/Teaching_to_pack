@@ -13,11 +13,11 @@ import time
 import os
 import torch.nn.functional as F
 from src.model.util import set_seed, detach_dict, compute_dict_mean
-from environment.dataset.test_dataset.test_image_dataset import load_merged_data
-from src.policy.ddpm import DiffusionPolicy
+from environment.dataset.test_dataset.speed_test_dataset import load_merged_data
+from src.policy.image_ddpm import DiffusionPolicy
 from src.model.util import is_multi_gpu_checkpoint, memory_monitor
 from src.config.dataset_config import TASK_CONFIGS, DATA_DIR
-from src.aloha.aloha_scripts.visualize_episodes import STATE_NAMES,visualize_joints,load_hdf5
+from src.aloha.aloha_scripts.visualize_episodes import visualize_joints,load_hdf5
 
 
 CROP_TOP = False  # for aloha pro, whose top camera is high
@@ -43,9 +43,12 @@ def main(args):
     batch_size_train = args["batch_size"]
     num_epochs = args["num_epochs"]
     log_wandb = args["log_wandb"]
+    history_skip_frame = args["history_skip_frame"]
+    history_len = args["history_len"]
+    prediction_offset = args["prediction_offset"]
     is_test = args["test"]
     dataset_dir = args["dataset_dir"]
-    max_len = args['max_len']
+
     # Set up wandb
     if log_wandb:
         if is_eval:
@@ -62,9 +65,8 @@ def main(args):
                 mode="disabled",
             )
         else:
-            
+            run_name = ckpt_dir.split("/")[-1] + f".{args['seed']}"
             wandb_run_id_path = os.path.join(ckpt_dir, "wandb_run_id.txt")
-            run_name = time.strftime("%Y-%m-%d-%H-%M-%S")
             # check if wandb run exists
             if os.path.exists(wandb_run_id_path):
                 with open(wandb_run_id_path, "r") as f:
@@ -74,7 +76,6 @@ def main(args):
                     entity="joeywang-of",
                     name=run_name,
                     resume=saved_run_id,
-                    mode="disabled",
                 )
             else:
                 wandb.init(
@@ -115,14 +116,13 @@ def main(args):
         "lr": args["lr"],
         "camera_names": camera_names,
         "action_dim": 14,
-        "observation_horizon": 1,
-        "action_horizon": 8,  # TODO 
-        "prediction_horizon": 16,
+        "observation_horizon": args["history_len"]+1,
+        "action_horizon": args["prediction_offset"] + 1,  # TODO 
+        "prediction_horizon": args["history_len"]*args["history_skip_frame"]+args["prediction_offset"]+1,
         "num_queries": args["chunk_size"],
         "num_inference_timesteps": 10,
         "multi_gpu": args["multi_gpu"],
         "is_eval": is_eval,
-
         }
 
     config = {
@@ -150,11 +150,14 @@ def main(args):
         num_episodes_list,
         camera_names,
         batch_size_train,
-        max_len=max_len,
+        max_len=history_len*history_skip_frame+prediction_offset+1,
         policy_class=policy_class,
+        history_skip_frame=history_skip_frame,
+        history_len=history_len,
+        prediction_offset=prediction_offset,
     )
     if is_test:
-        test_ddpm(test_dataloader, config, "policy_epoch_40_seed_42.ckpt")
+        test_ddpm(test_dataloader, config, "policy_epoch_35_seed_42.ckpt")
         exit()
 
     # save dataset stats
@@ -219,6 +222,7 @@ def forward_pass(data, policy):
     )
     return policy( image_data, action_data, is_pad)
 
+
 def test_ddpm(test_dataloader, config, ckpt_name):
     ckpt_dir = config["ckpt_dir"]
     policy_class = config["policy_class"]
@@ -226,7 +230,7 @@ def test_ddpm(test_dataloader, config, ckpt_name):
 
     # Load policy
     ckpt_path = os.path.join(ckpt_dir, ckpt_name)
-    pth_path = os.path.join(ckpt_dir, "best_model.pth")
+    pth_path = os.path.join(ckpt_dir, "best_model_epoch_2951_seed_42.pth")
     policy = make_policy(policy_class, policy_config)
     if os.path.exists(ckpt_path):
         model_state_dict = torch.load(ckpt_path)["model_state_dict"]
@@ -268,20 +272,28 @@ def test_ddpm(test_dataloader, config, ckpt_name):
         for idx, data in enumerate(tqdm(test_dataloader),start=0):
             images, true_actions, _ = [item.cuda() for item in data]
             if idx == 0 or idx % prediction_horizon == 0:
-                predicted_actions = policy(images)
-                # print(f"index:{idx},Predicted {len(pred_full_traj)} steps, shape:{np.array(pred_full_traj).shape}")
+                noisy_actions, predicted_actions = policy(images)
+                        
+                # noisy_actions = noisy_actions.cpu().numpy()
+                # noisy_actions = noisy_actions.squeeze(0)
+                # # true_actions_np = post_process(true_actions[0][:prediction_horizon].cpu().numpy())
+                # # print(f"noisy_actions:{noisy_actions.shape}")
+                # pred_full_traj.extend(noisy_actions)
+                noisy_actions = noisy_actions.cpu().numpy()
+                noisy_actions = noisy_actions.squeeze(0)
+                pred_full_traj.extend(noisy_actions)
 
-                predicted_actions = predicted_actions.cpu().numpy()
-                predicted_actions = predicted_actions.squeeze(0)
-                pred_full_traj.extend(predicted_actions)
+                # print(f"index:{idx},Predicted {len(pred_full_traj)} steps, shape:{np.array(pred_full_traj).shape}")
+                # true_full_traj.extend(true_actions_np)
 
                 if len(pred_full_traj) > episode_length:
                         # 裁剪到episode长度
                         pred_full_traj = post_process(np.array(pred_full_traj))
                         pred_full_traj = np.array(pred_full_traj[:episode_length])
-
+                        # true_full_traj = np.array(true_full_traj[:episode_length])
+                        
                         visualize_joints(action, pred_full_traj, plot_path=os.path.join(save_dir, f'episode{num_episodes}_comparison.png'))
-
+                            
                         loss = F.mse_loss(torch.tensor(pred_full_traj), torch.tensor(action))
                         total_loss += loss.item()
                         num_episodes += 1
@@ -298,10 +310,6 @@ def test_ddpm(test_dataloader, config, ckpt_name):
     print(f"Testing completed. Results saved in: {save_dir}")
     print(f"Average MSE Loss: {avg_loss:.4f}")
 
-
-
-    
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--eval', action='store_true')
@@ -314,13 +322,15 @@ if __name__ == "__main__":
     parser.add_argument('--num_epochs', action='store', type=int, help='num_epochs', required=True)
     parser.add_argument('--lr', action='store', type=float, help='lr', required=True)
     parser.add_argument('--dataset_dir', action='store', type=str, help='dataset_dir', required=True)
-    parser.add_argument('--max_len', action='store', type=int, help='max_len', default=16, required=False)
     #diffusion
     parser.add_argument('--chunk_size', action='store', type=int, help='chunk_size', required=False)
     parser.add_argument('--temporal_agg', action='store_true')
     parser.add_argument('--log_wandb', action='store_true')
     parser.add_argument('--gpu', action='store', type=int, help='gpu', default=0, required=False)
     parser.add_argument('--multi_gpu', action='store_true')
+    parser.add_argument('--history_len', type=int, default=1)
+    parser.add_argument('--history_skip_frame', type=int, default=7)
+    parser.add_argument('--prediction_offset', type=int, default=8)
     parser.add_argument('--test', action='store_true',default=False)
     args = parser.parse_args()
     config = vars(args)
