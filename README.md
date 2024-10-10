@@ -1,9 +1,18 @@
 ﻿# Teaching-to-pack
 
-**This project is aim to explpore the efforts of deploying diffusion policy on aloha robots.
-Mainly focusing on CNN-based and transformer-based diffusion policy.**
+This project is aim to explpore the efforts of deploying diffusion policy on aloha robots.
+The task is to complete a packing scenscenario, such as the gif below.
+The repo consists of the methods of analysing the collected data and mainly focuses on CNN-based and transformer-based diffusion policy.
 
-![image](environment/dataset/data/denoising_step_0.gif)
+
+<div align="center">
+  <img src="environment/dataset/data/episode_6_gif.gif" alt="Packing Scenario">
+</div>
+
+
+And the policy works in such way:
+![Denosing process](environment/dataset/data/denoising_step_0.gif)
+
 
 # Installation 
 
